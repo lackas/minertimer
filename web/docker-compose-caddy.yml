@@ -1,0 +1,18 @@
+services:
+  minertimer:
+    build:
+      context: ..
+      dockerfile: web/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./db:/app/db
+    env_file:
+      - .env
+    restart: unless-stopped
+    networks:
+      - caddy-shared
+
+networks:
+  caddy-shared:
+    external: true
