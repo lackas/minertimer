@@ -8,15 +8,56 @@ if [ -f "$ENV_FILE" ]; then
     exit 1
 fi
 
-SECRET_KEY=$(python3 - <<'PY' 2>/dev/null || python - <<'PY')
+generate_secret() {
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - <<'PY' 2>/dev/null
 import secrets
 print(secrets.token_urlsafe(32))
 PY
+        return
+    fi
+    if command -v python >/dev/null 2>&1; then
+        python - <<'PY' 2>/dev/null
+import secrets
+print(secrets.token_urlsafe(32))
+PY
+        return
+    fi
+    if command -v openssl >/dev/null 2>&1; then
+        openssl rand -base64 48 | tr -d '\n'
+        return
+    fi
+    uuidgen 2>/dev/null || echo "fallback-secret-$(date +%s)"
+}
 
-API_TOKEN=$(python3 - <<'PY' 2>/dev/null || python - <<'PY')
+generate_uuid() {
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - <<'PY' 2>/dev/null
 import uuid
 print(uuid.uuid4())
 PY
+        return
+    fi
+    if command -v python >/dev/null 2>&1; then
+        python - <<'PY' 2>/dev/null
+import uuid
+print(uuid.uuid4())
+PY
+        return
+    fi
+    if command -v uuidgen >/dev/null 2>&1; then
+        uuidgen
+        return
+    fi
+    if command -v openssl >/dev/null 2>&1; then
+        openssl rand -hex 16
+        return
+    fi
+    echo "fallback-token-$(date +%s)"
+}
+
+SECRET_KEY=$(generate_secret)
+API_TOKEN=$(generate_uuid)
 
 cat > "$ENV_FILE" <<EOF
 SECRET_KEY=$SECRET_KEY
