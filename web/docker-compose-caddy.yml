@@ -3,16 +3,14 @@ services:
     build:
       context: ..
       dockerfile: web/Dockerfile
-    ports:
-      - "127.0.0.1:8000:8000"
     volumes:
       - ./db:/app/db
     env_file:
       - .env
     restart: unless-stopped
     networks:
-      - caddy-shared
+      - caddy_default
 
 networks:
-  caddy-shared:
+  caddy_default:
     external: true
