@@ -6,17 +6,14 @@
 # Copyright Soferio Pty Ltd
 ###
 
-# Step 1: Remove Minertime script w
+# Step 1: Unregister the minertimer as a background task
+launchctl bootout system/com.soferio.minertimer_daily_timer
 
+# Step 2: Remove Minertime script
 rm /Users/Shared/minertimer/minertimer.sh
 
-# Step 2: Remove PLIST file 
-
+# Step 3: Remove PLIST file 
 rm /Library/LaunchDaemons/com.soferio.minertimer_daily_timer.plist
-
-# Step 3: Unregister the minertimer as a background task
-
-launchctl bootout system/com.soferio.minertimer_daily_timer
 
 # Step 4: Remove log file
 rm /var/lib/minertimer/minertimer_playtime.log
@@ -32,4 +29,3 @@ echo "If you get nothing, it means the background process is no longer running a
 
 # TO CHECK IF SCRIPT IS RUNNING:
 # sudo launchctl list | grep soferio
-

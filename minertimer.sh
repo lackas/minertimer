@@ -67,6 +67,13 @@ while true; do
             if [[ $? -eq 0 && "$res" =~ ^[0-9]+$ && $res -ne $TIME_LIMIT && $res -gt $TOTAL_PLAYED_TIME ]]; then
                 echo "Increasing TIME_LIMIT from $TIME_LIMIT to $res ($TOTAL_PLAYED_TIME played)"
                 TIME_LIMIT="$res"
+                REMAINING=$((TIME_LIMIT - TOTAL_PLAYED_TIME))
+                if (( REMAINING > 300 )); then
+                    DISPLAY_5_MIN_WARNING=true
+                fi
+                if (( REMAINING > 60 )); then
+                    DISPLAY_1_MIN_WARNING=true
+                fi
             fi
         fi 
         
