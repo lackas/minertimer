@@ -12,8 +12,7 @@ DISPLAY_1_MIN_WARNING=true
 NOTIFICATION_URL="http://minecraft.lackas.net/timer"
 
 # Directory and file to store total played time for the day
-#LOG_DIRECTORY="/var/lib/minertimer"
-LOG_DIRECTORY="."
+LOG_DIRECTORY="/var/lib/minertimer"
 LOG_FILE="${LOG_DIRECTORY}/minertimer_playtime.log"
 
 # Create the directory (don't throw error if already exists)
@@ -51,12 +50,12 @@ if [ "$LAST_PLAY_DATE" != "$CURRENT_DATE" ]; then
     write_log
 fi
 
-RECHECK_TIME=2
+RECHECK_TIME=30
 
 while true; do
     
-    MINECRAFT_PIDS=$(ps aux | grep -iww "[M]inecraft" | awk '{print $2}')
-    MINECRAFT_UID=$(ps aux | grep -iww "[M]inecraft" | awk '{print $1}')
+    MINECRAFT_PIDS=$(ps aux | grep -Eiww "[M]inecraft|[N]oRiskClient|[M]odrinthApp/meta" | awk '{print $2}')
+    MINECRAFT_UID=$(ps aux | grep -Eiww "[M]inecraft|[N]oRiskClient|[M]odrinthApp/meta" | awk '{print $1}' | head -1 )
     # If Minecraft is running
     
     if [ -n "$MINECRAFT_PIDS" ]; then
