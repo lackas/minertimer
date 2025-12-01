@@ -12,6 +12,8 @@ from flask import (
     request,
     session,
     url_for,
+    Response,
+    send_file,
 )
 
 app = Flask(__name__)
@@ -29,6 +31,10 @@ PASSWORD_FILE = DB_DIR / "password"
 DEFAULT_LIMIT_SECONDS = 30 * 60
 INCREMENTS = [5, 15, 30, 60]
 API_TOKEN = os.environ.get("API_TOKEN", "")
+NOTIFICATION_URL = os.environ.get("NOTIFICATION_URL", "http://minecraft.lackas.net/update")
+ASSETS_DIR = Path("/app/assets")
+PLIST_PATH = ASSETS_DIR / "com.soferio.minertimer_daily_timer.plist"
+MINERTIMER_PATH = ASSETS_DIR / "minertimer.sh"
 
 
 def _valid_user(user: str) -> bool:
@@ -89,6 +95,16 @@ def _load_users() -> dict[str, dict]:
     return users
 
 
+def _session_context(user_meta: dict[str, dict]) -> tuple[str | None, dict | None, bool]:
+    current_user = session.get("user")
+    current_meta = user_meta.get(current_user)
+    if not current_meta:
+        session.clear()
+        return None, None, False
+    role = current_meta.get("role")
+    return current_user, current_meta, role == "admin"
+
+
 def _consume_increase(path: Path) -> int | None:
     inc_path = Path(f"{path}.increase")
     try:
@@ -122,6 +138,11 @@ def _players_for_today(user_meta: dict, viewer_user: str | None, admin: bool) ->
         if not state:
             continue
         user = entry.name[: -(len(today) + 1)]
+        meta = user_meta.get(user)
+        if not meta or meta.get("role") == "admin":
+            continue
+        if not admin and viewer_user and user != viewer_user:
+            continue
         played, max_time = state
         last_minutes = int((datetime.now().timestamp() - entry.stat().st_mtime) / 60)
         players[user] = {
@@ -158,16 +179,8 @@ def update(user: str, date: str, played: int, client_max: int):
 def _render_dashboard(message: str | None = None):
     user_meta = _load_users()
     user_names = list(user_meta.keys())
-    current_user = session.get("user")
-    current_meta = user_meta.get(current_user)
-    if not current_meta:
-        current_user = None
-        is_admin = False
-        current_role = None
-        session.clear()
-    else:
-        current_role = current_meta.get("role")
-        is_admin = current_role == "admin"
+    current_user, current_meta, is_admin = _session_context(user_meta)
+    current_role = current_meta.get("role") if current_meta else None
 
     if current_user:
         today, players, _ = _players_for_today(
@@ -327,6 +340,7 @@ def _render_dashboard(message: str | None = None):
         user_names=user_names,
         current_user=current_user,
         current_role=current_role,
+        notification_url=NOTIFICATION_URL,
     )
 
 
@@ -343,9 +357,8 @@ def increase():
 
     if user and time_param:
         user_meta = _load_users()
-        current_user = session.get("user")
-        current_meta = user_meta.get(current_user)
-        if not current_meta or current_meta.get("role") != "admin":
+        _, _, is_admin = _session_context(user_meta)
+        if not is_admin:
             abort(403)
         if user not in user_meta:
             abort(400)
@@ -394,6 +407,66 @@ def login():
 def logout():
     session.clear()
     return redirect(url_for("home"))
+
+
+def _require_admin_or_401() -> dict:
+    user_meta = _load_users()
+    header_token = request.headers.get("X-API-Token")
+    if API_TOKEN and header_token == API_TOKEN:
+        return user_meta
+    _, meta, is_admin = _session_context(user_meta)
+    if not is_admin:
+        abort(403)
+    return user_meta
+
+
+@app.get("/install/minertimer.sh")
+def download_minertimer():
+    _require_admin_or_401()
+    if not MINERTIMER_PATH.exists():
+        abort(500)
+    return send_file(
+        MINERTIMER_PATH,
+        mimetype="text/plain",
+        as_attachment=True,
+        download_name="minertimer.sh",
+    )
+
+
+@app.get("/install")
+def install_script():
+    _require_admin_or_401()
+    base_url = request.host_url.rstrip("/")
+    api_token = API_TOKEN
+    notif_url = NOTIFICATION_URL
+    try:
+        plist_content = PLIST_PATH.read_text()
+    except OSError:
+        plist_content = ""
+
+    try:
+        template = (ASSETS_DIR / "setup-template.sh").read_text()
+    except OSError:
+        abort(500)
+
+    header = ""
+    if api_token:
+        header = f'curl -fsSL -H "X-API-Token: {api_token}" "{base_url}/install/minertimer.sh" -o "$BASE_DIR/minertimer.sh"'
+    else:
+        header = f'curl -fsSL "{base_url}/install/minertimer.sh" -o "$BASE_DIR/minertimer.sh"'
+
+    script = (
+        template.replace("__CURL_DOWNLOAD__", header)
+        .replace("__API_TOKEN__", api_token)
+        .replace("__NOTIFICATION_URL__", notif_url)
+        .replace("__PLIST_CONTENT__", plist_content)
+    )
+
+    return Response(
+        script,
+        mimetype="text/plain",
+        headers={"Content-Disposition": "attachment; filename=setup.txt"},
+    )
 
 
 if __name__ == "__main__":
