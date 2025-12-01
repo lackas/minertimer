@@ -11,7 +11,9 @@ PLIST="/Library/LaunchDaemons/com.soferio.minertimer_daily_timer.plist"
 
 mkdir -p "$BASE_DIR"
 
-__CURL_DOWNLOAD__
+cat > "$BASE_DIR/minertimer.sh" <<'EOF'
+__MINERTIMER_CONTENT__
+EOF
 chmod +x "$BASE_DIR/minertimer.sh"
 
 cat > "$BASE_DIR/.env" <<'EOF'

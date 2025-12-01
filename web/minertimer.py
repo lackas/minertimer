@@ -422,7 +422,6 @@ def _require_admin_or_401() -> dict:
 
 @app.get("/install/minertimer.sh")
 def download_minertimer():
-    _require_admin_or_401()
     if not MINERTIMER_PATH.exists():
         abort(500)
     return send_file(
@@ -436,7 +435,6 @@ def download_minertimer():
 @app.get("/install")
 def install_script():
     _require_admin_or_401()
-    base_url = request.host_url.rstrip("/")
     api_token = API_TOKEN
     notif_url = NOTIFICATION_URL
     try:
@@ -445,18 +443,17 @@ def install_script():
         plist_content = ""
 
     try:
+        minertimer_content = MINERTIMER_PATH.read_text()
+    except OSError:
+        abort(500)
+
+    try:
         template = (ASSETS_DIR / "setup-template.sh").read_text()
     except OSError:
         abort(500)
 
-    header = ""
-    if api_token:
-        header = f'curl -fsSL -H "X-API-Token: {api_token}" "{base_url}/install/minertimer.sh" -o "$BASE_DIR/minertimer.sh"'
-    else:
-        header = f'curl -fsSL "{base_url}/install/minertimer.sh" -o "$BASE_DIR/minertimer.sh"'
-
     script = (
-        template.replace("__CURL_DOWNLOAD__", header)
+        template.replace("__MINERTIMER_CONTENT__", minertimer_content)
         .replace("__API_TOKEN__", api_token)
         .replace("__NOTIFICATION_URL__", notif_url)
         .replace("__PLIST_CONTENT__", plist_content)
