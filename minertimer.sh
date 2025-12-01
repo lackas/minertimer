@@ -19,6 +19,7 @@ DISPLAY_5_MIN_WARNING=true
 DISPLAY_1_MIN_WARNING=true
 NOTIFICATION_URL=${NOTIFICATION_URL:-"http://minecraft.lackas.net/update"}
 API_TOKEN=${API_TOKEN:-""}
+CURL_HEADER_FILE=${CURL_HEADER_FILE:-"/Users/Shared/minertimer/.curl_headers"}
 
 # Directory and file to store total played time for the day
 LOG_DIRECTORY="/var/lib/minertimer"
@@ -61,6 +62,17 @@ fi
 
 RECHECK_TIME=30
 
+# Ensure header file exists with the token so it stays off the command line
+if [ -n "$API_TOKEN" ] && [ ! -s "$CURL_HEADER_FILE" ]; then
+    (umask 177; printf 'X-API-Token: %s\n' "$API_TOKEN" > "$CURL_HEADER_FILE")
+fi
+
+# Build curl args so the token stays out of process args
+CURL_BASE_ARGS=(-s)
+if [ -s "$CURL_HEADER_FILE" ]; then
+    CURL_BASE_ARGS+=(-H "@${CURL_HEADER_FILE}")
+fi
+
 while true; do
     
     MINECRAFT_PIDS=$(ps aux | grep -Eiww "[M]inecraft|[N]oRiskClient|[M]odrinthApp/meta" | awk '{print $2}')
@@ -70,11 +82,7 @@ while true; do
     if [ -n "$MINECRAFT_PIDS" ]; then
         if [ -n "$NOTIFICATION_URL" ]; then
             url="$NOTIFICATION_URL/$MINECRAFT_UID/$CURRENT_DATE/$TOTAL_PLAYED_TIME/$TIME_LIMIT"
-            if [ -n "$API_TOKEN" ]; then
-                res=`curl -s -H "X-API-Token: $API_TOKEN" "$url"`
-            else
-                res=`curl -s "$url"`
-            fi
+            res=$(curl "${CURL_BASE_ARGS[@]}" "$url")
             # echo "RESPONSE: $res"
             if [[ $? -eq 0 && "$res" =~ ^[0-9]+$ && $res -ne $TIME_LIMIT && $res -gt $TOTAL_PLAYED_TIME ]]; then
                 echo "Increasing TIME_LIMIT from $TIME_LIMIT to $res ($TOTAL_PLAYED_TIME played)"

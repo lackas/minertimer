@@ -20,6 +20,14 @@ cat > "$BASE_DIR/.env" <<'EOF'
 API_TOKEN=__API_TOKEN__
 NOTIFICATION_URL=__NOTIFICATION_URL__
 EOF
+chmod 600 "$BASE_DIR/.env"
+
+if [ -n "__API_TOKEN__" ]; then
+cat > "$BASE_DIR/.curl_headers" <<'EOF'
+X-API-Token: __API_TOKEN__
+EOF
+  chmod 600 "$BASE_DIR/.curl_headers"
+fi
 
 cat > "$PLIST" <<'EOF'
 __PLIST_CONTENT__
