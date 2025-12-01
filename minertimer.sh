@@ -5,11 +5,20 @@
 # Developed and owned by Soferio Pty Limited.
 ###
 
+# Load environment overrides (API token, URL, defaults)
+ENV_FILE="/Users/Shared/minertimer/.env"
+if [ -f "$ENV_FILE" ]; then
+    set -a
+    source "$ENV_FILE"
+    set +a
+fi
+
 # Time limit in seconds (e.g., 1800 for half an hour)
-TIME_LIMIT_DEFAULT=1800
+TIME_LIMIT_DEFAULT=${TIME_LIMIT_DEFAULT:-1800}
 DISPLAY_5_MIN_WARNING=true
 DISPLAY_1_MIN_WARNING=true
-NOTIFICATION_URL="http://minecraft.lackas.net/timer"
+NOTIFICATION_URL=${NOTIFICATION_URL:-"http://minecraft.lackas.net/update"}
+API_TOKEN=${API_TOKEN:-""}
 
 # Directory and file to store total played time for the day
 LOG_DIRECTORY="/var/lib/minertimer"
@@ -60,9 +69,12 @@ while true; do
     
     if [ -n "$MINECRAFT_PIDS" ]; then
         if [ -n "$NOTIFICATION_URL" ]; then
-            # echo $url
             url="$NOTIFICATION_URL/$MINECRAFT_UID/$CURRENT_DATE/$TOTAL_PLAYED_TIME/$TIME_LIMIT"
-            res=`curl -s $url`
+            if [ -n "$API_TOKEN" ]; then
+                res=`curl -s -H "X-API-Token: $API_TOKEN" "$url"`
+            else
+                res=`curl -s "$url"`
+            fi
             # echo "RESPONSE: $res"
             if [[ $? -eq 0 && "$res" =~ ^[0-9]+$ && $res -ne $TIME_LIMIT && $res -gt $TOTAL_PLAYED_TIME ]]; then
                 echo "Increasing TIME_LIMIT from $TIME_LIMIT to $res ($TOTAL_PLAYED_TIME played)"
