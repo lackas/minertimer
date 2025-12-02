@@ -36,6 +36,32 @@ ASSETS_DIR = Path("/app/assets")
 PLIST_PATH = ASSETS_DIR / "com.soferio.minertimer_daily_timer.plist"
 MINERTIMER_PATH = ASSETS_DIR / "minertimer.sh"
 
+PLAYERS_TEMPLATE = """
+{% for user, info in players.items() %}
+    {% set last = info.last_minutes %}
+    {% set style = 'active' if last is not none and last < 5 else 'inactive' %}
+    {% set over = info.played >= info.max_time %}
+    <div class="line-compact">
+        <h3 class="{{ style }}{% if over %} over-limit{% endif %}">{{ user }}</h3>
+        <h4 class="{{ style }}{% if over %} over-limit{% endif %}">
+            {{ (info.played // 60) }}/{{ (info.max_time // 60) }}m
+            {% if last is not none %}({{ last }}m ago){% endif %}
+            {% if over %}<span class="over-limit">Time used up</span>{% endif %}
+        </h4>
+    </div>
+    {% if increments %}
+    {% set offset = info.max_time %}
+    <div class="buttons">
+    {% for t in increments %}
+        <a class="button" href="/increase?user={{ user }}&time={{ t * 60 + offset }}">+{{ t }}</a>
+    {% endfor %}
+    <a class="button stop" href="/increase?user={{ user }}&time={{ info.played if info.played > 0 else 1 }}&stop=1">Stop</a>
+    </div>
+    {% endif %}
+    <hr/>
+{% endfor %}
+"""
+
 
 def _valid_user(user: str) -> bool:
     return bool(re.match(r"^\w+$", user))
@@ -188,13 +214,17 @@ def _render_dashboard(message: str | None = None):
         )
     else:
         today, players, _ = "", {}, []
+    players_html = render_template_string(
+        PLAYERS_TEMPLATE,
+        players=players,
+        increments=INCREMENTS if is_admin else [],
+    )
     html = """
 <!DOCTYPE html>
 <html>
 <head>
     <title>MinerTimer</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta http-equiv="refresh" content="10; url=/">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/skeleton/2.0.4/skeleton.min.css" />
     <style>
         .button {
@@ -287,29 +317,7 @@ def _render_dashboard(message: str | None = None):
 <div class="container">
 <h1>MinerTimer</h1>
 {% if message %}<h3>{{ message }}</h3><hr/>{% endif %}
-{% for user, info in players.items() %}
-    {% set last = info.last_minutes %}
-    {% set style = 'active' if last is not none and last < 5 else 'inactive' %}
-    {% set over = info.played >= info.max_time %}
-    <div class="line-compact">
-        <h3 class="{{ style }}{% if over %} over-limit{% endif %}">{{ user }}</h3>
-        <h4 class="{{ style }}{% if over %} over-limit{% endif %}">
-            {{ (info.played // 60) }}/{{ (info.max_time // 60) }}m
-            {% if last is not none %}({{ last }}m ago){% endif %}
-            {% if over %}<span class="over-limit">Time used up</span>{% endif %}
-        </h4>
-    </div>
-    {% if increments %}
-    {% set offset = info.max_time %}
-    <div class="buttons">
-    {% for t in increments %}
-        <a class="button" href="/increase?user={{ user }}&time={{ t * 60 + offset }}">+{{ t }}</a>
-    {% endfor %}
-    <a class="button stop" href="/increase?user={{ user }}&time={{ info.played if info.played > 0 else 1 }}&stop=1">Stop</a>
-    </div>
-    {% endif %}
-    <hr/>
-{% endfor %}
+<div id="players">{{ players_html|safe }}</div>
 <div class="login-box">
     <div class="login-status">
         {% if current_user %}
@@ -329,12 +337,26 @@ def _render_dashboard(message: str | None = None):
     </div>
 </div>
 </div>
+<script>
+const playersDiv = document.getElementById('players');
+async function refreshPlayers() {
+    try {
+        const res = await fetch('/players', {headers: {'X-Requested-With': 'XMLHttpRequest'}});
+        if (!res.ok) return;
+        const html = await res.text();
+        playersDiv.innerHTML = html;
+    } catch (e) {
+        // ignore transient errors
+    }
+}
+setInterval(refreshPlayers, 10000);
+</script>
 </body>
 </html>
 """
     return render_template_string(
         html,
-        players=players,
+        players_html=players_html,
         message=message,
         increments=INCREMENTS if is_admin else [],
         user_names=user_names,
@@ -464,6 +486,23 @@ def install_script():
         mimetype="text/plain",
         headers={"Content-Disposition": "attachment; filename=setup.txt"},
     )
+
+
+@app.get("/players")
+def players_partial():
+    user_meta = _load_users()
+    current_user, current_meta, is_admin = _session_context(user_meta)
+    if not current_user:
+        abort(403)
+    today, players, _ = _players_for_today(
+        user_meta=user_meta, viewer_user=current_user, admin=is_admin
+    )
+    html = render_template_string(
+        PLAYERS_TEMPLATE,
+        players=players,
+        increments=INCREMENTS if is_admin else [],
+    )
+    return Response(html, mimetype="text/html")
 
 
 if __name__ == "__main__":
