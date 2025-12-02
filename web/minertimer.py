@@ -488,6 +488,11 @@ def install_script():
     )
 
 
+@app.get("/increase.pl")
+def legacy_increase_redirect():
+    return redirect(url_for("home"))
+
+
 @app.get("/players")
 def players_partial():
     user_meta = _load_users()
