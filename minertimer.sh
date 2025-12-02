@@ -84,8 +84,8 @@ while true; do
             url="$NOTIFICATION_URL/$MINECRAFT_UID/$CURRENT_DATE/$TOTAL_PLAYED_TIME/$TIME_LIMIT"
             res=$(curl "${CURL_BASE_ARGS[@]}" "$url")
             # echo "RESPONSE: $res"
-            if [[ $? -eq 0 && "$res" =~ ^[0-9]+$ && $res -ne $TIME_LIMIT && $res -gt $TOTAL_PLAYED_TIME ]]; then
-                echo "Increasing TIME_LIMIT from $TIME_LIMIT to $res ($TOTAL_PLAYED_TIME played)"
+            if [[ $? -eq 0 && "$res" =~ ^[0-9]+$ && $res -ne $TIME_LIMIT ]]; then
+                echo "Updating TIME_LIMIT from $TIME_LIMIT to $res ($TOTAL_PLAYED_TIME played)"
                 TIME_LIMIT="$res"
                 REMAINING=$((TIME_LIMIT - TOTAL_PLAYED_TIME))
                 if (( REMAINING > 300 )); then
