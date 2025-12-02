@@ -488,7 +488,7 @@ def install_script():
     )
 
 
-@app.get("/increase.pl")
+@app.route("/increase.pl", methods=["GET"], strict_slashes=False)
 def legacy_increase_redirect():
     return redirect(url_for("home"))
 
