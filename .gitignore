@@ -1,3 +1,4 @@
 *.swp
 web/db/
 web/.env
+__pycache__

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import os
 import re
@@ -21,6 +21,7 @@ app.secret_key = os.environ.get("SECRET_KEY", "change-me")
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
+    PERMANENT_SESSION_LIFETIME=timedelta(days=365),
 )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -421,6 +422,7 @@ def login():
     if not meta or password != meta.get("password"):
         return _render_dashboard("Login failed")
     session.clear()
+    session.permanent = True
     session["user"] = username
     return redirect(url_for("home"))
 
