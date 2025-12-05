@@ -184,8 +184,8 @@ def _players_for_today(user_meta: dict, viewer_user: str | None, admin: bool) ->
 
 @app.get("/update/<user>/<date>/<int:played>/<int:client_max>")
 def update(user: str, date: str, played: int, client_max: int):
-    if API_TOKEN and request.headers.get("X-API-Token") != API_TOKEN:
-        abort(401)
+    # if API_TOKEN and request.headers.get("X-API-Token") != API_TOKEN:
+    #     abort(401)
     if not (_valid_user(user) and _valid_date(date)):
         abort(400)
     if played < 0 or client_max <= 0:
@@ -195,7 +195,11 @@ def update(user: str, date: str, played: int, client_max: int):
     user_meta = _load_users()
     default_limit = user_meta.get(user, {}).get("default_limit", DEFAULT_LIMIT_SECONDS)
     current_state = _read_state(path)
+    current_played = current_state[0] if current_state else 0
     current_max = current_state[1] if current_state else default_limit
+
+    # don't allow decrease of played time
+    played = max(played, current_played)
 
     # Ignore the client max; web UI is authoritative.
     _write_state(path, played, current_max)
