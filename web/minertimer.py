@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-from datetime import datetime, timedelta
-from pathlib import Path
 import os
 import re
+from datetime import datetime, timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from flask import (
     Flask,
@@ -36,6 +37,11 @@ NOTIFICATION_URL = os.environ.get("NOTIFICATION_URL", "http://minecraft.lackas.n
 ASSETS_DIR = Path("/app/assets")
 PLIST_PATH = ASSETS_DIR / "com.soferio.minertimer_daily_timer.plist"
 MINERTIMER_PATH = ASSETS_DIR / "minertimer.sh"
+TZ_NAME = os.environ.get("TIMEZONE", "Europe/Berlin")
+try:
+    TZ = ZoneInfo(TZ_NAME)
+except Exception:
+    TZ = ZoneInfo("UTC")
 
 PLAYERS_TEMPLATE = """
 {% for user, info in players.items() %}
@@ -144,8 +150,13 @@ def _consume_increase(path: Path) -> int | None:
         return None
 
 
+def _now_local() -> datetime:
+    return datetime.now(tz=TZ)
+
+
 def _players_for_today(user_meta: dict, viewer_user: str | None, admin: bool) -> tuple[str, dict]:
-    today = datetime.now().strftime("%Y-%m-%d")
+    now = _now_local()
+    today = now.strftime("%Y-%m-%d")
     players: dict[str, dict] = {}
     for name, meta in user_meta.items():
         if meta.get("role") == "admin":
@@ -171,7 +182,7 @@ def _players_for_today(user_meta: dict, viewer_user: str | None, admin: bool) ->
         if not admin and viewer_user and user != viewer_user:
             continue
         played, max_time = state
-        last_minutes = int((datetime.now().timestamp() - entry.stat().st_mtime) / 60)
+        last_minutes = int((now.timestamp() - entry.stat().st_mtime) / 60)
         players[user] = {
             "played": played,
             "max_time": max_time,
@@ -316,6 +327,17 @@ def _render_dashboard(message: str | None = None):
         .line-compact h3, .line-compact h4 {
             margin: 0;
         }
+        .date-badge {
+            position: fixed;
+            right: 12px;
+            bottom: 12px;
+            padding: 6px 10px;
+            background: rgba(255, 255, 255, 0.85);
+            border-radius: 8px;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+            font-weight: 600;
+            color: #555;
+        }
     </style>
 </head>
 <body>
@@ -356,6 +378,7 @@ async function refreshPlayers() {
 }
 setInterval(refreshPlayers, 10000);
 </script>
+<div class="date-badge">{{ current_date }}</div>
 </body>
 </html>
 """
@@ -368,6 +391,7 @@ setInterval(refreshPlayers, 10000);
         current_user=current_user,
         current_role=current_role,
         notification_url=NOTIFICATION_URL,
+        current_date=_now_local().strftime("%Y-%m-%d"),
     )
 
 
@@ -398,7 +422,7 @@ def increase():
         if new_total <= 0 and not stop_flag:
             abort(400)
 
-        date_str = datetime.now().strftime("%Y-%m-%d")
+        date_str = _now_local().strftime("%Y-%m-%d")
         path = DB_DIR / f"{user}-{date_str}"
         current_state = _read_state(path)
         current_played = current_state[0] if current_state else 0
