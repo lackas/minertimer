@@ -49,7 +49,7 @@ PLAYERS_TEMPLATE = """
     {% set style = 'active' if last is not none and last < 5 else 'inactive' %}
     {% set over = info.played >= info.max_time %}
     <div class="line-compact">
-        <h3 class="{{ style }}{% if over %} over-limit{% endif %}">{{ user }}</h3>
+        <h3 class="{{ style }}{% if over %} over-limit{% endif %}"><a class="user-link" href="{{ url_for('user_stats', user=user) }}">{{ user }}</a></h3>
         <h4 class="{{ style }}{% if over %} over-limit{% endif %}">
             {{ (info.played // 60) }}/{{ (info.max_time // 60) }}m
             {% if last is not none %}({{ last }}m ago){% endif %}
@@ -193,6 +193,27 @@ def _players_for_today(user_meta: dict, viewer_user: str | None, admin: bool) ->
     return today, players, list(user_meta.keys())
 
 
+def _daily_stats(user: str, days: int = 30) -> list[dict]:
+    end_date = _now_local().date()
+    start_date = end_date - timedelta(days=days - 1)
+    results: list[dict] = []
+    for i in range(days):
+        day = start_date + timedelta(days=i)
+        date_str = day.strftime("%Y-%m-%d")
+        path = DB_DIR / f"{user}-{date_str}"
+        state = _read_state(path)
+        played = state[0] if state else 0
+        results.append(
+            {
+                "date": date_str,
+                "label": day.strftime("%b %d"),
+                "seconds": played,
+                "minutes": played // 60,
+            }
+        )
+    return results
+
+
 @app.get("/update/<user>/<date>/<int:played>/<int:client_max>")
 def update(user: str, date: str, played: int, client_max: int):
     # if API_TOKEN and request.headers.get("X-API-Token") != API_TOKEN:
@@ -326,6 +347,10 @@ def _render_dashboard(message: str | None = None):
         }
         .line-compact h3, .line-compact h4 {
             margin: 0;
+        }
+        .user-link {
+            color: inherit;
+            text-decoration: none;
         }
         .date-badge {
             position: fixed;
@@ -515,6 +540,114 @@ def install_script():
         script,
         mimetype="text/plain",
         headers={"Content-Disposition": "attachment; filename=setup.txt"},
+    )
+
+
+@app.get("/user/<user>")
+def user_stats(user: str):
+    if not _valid_user(user):
+        abort(404)
+    user_meta = _load_users()
+    current_user, _, is_admin = _session_context(user_meta)
+    if not current_user:
+        abort(403)
+    meta = user_meta.get(user)
+    if not meta or meta.get("role") == "admin":
+        abort(404)
+    if not is_admin and current_user != user:
+        abort(403)
+
+    stats = _daily_stats(user, days=30)
+    avg_minutes = (sum(d["minutes"] for d in stats) / len(stats)) if stats else 0
+    max_minutes = max((d["minutes"] for d in stats), default=0)
+    scale = max_minutes if max_minutes > 0 else 1
+    html = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{ user }} stats</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/skeleton/2.0.4/skeleton.min.css" />
+    <style>
+        body { padding: 18px; }
+        .chart {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(48px, 1fr));
+            gap: 10px;
+            align-items: end;
+            margin-top: 20px;
+        }
+        .bar-wrap {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+        }
+        .bar {
+            width: 100%;
+            max-width: 46px;
+            background: linear-gradient(180deg, #5dade2 0%, #2e86c1 100%);
+            border-radius: 6px 6px 4px 4px;
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+            color: #fff;
+            font-size: 12px;
+            font-weight: 700;
+            padding: 4px 0;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+        }
+        .bar-value {
+            padding: 2px 4px;
+        }
+        .bar-label {
+            font-size: 11px;
+            text-align: center;
+            color: #555;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .meta {
+            color: #555;
+            font-size: 14px;
+        }
+        .link-back {
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <h3 style="margin: 0;">{{ user }} last 30 days</h3>
+            <div class="meta">Avg: {{ "%.1f"|format(avg_minutes) }} minutes/day</div>
+        </div>
+        <a class="button link-back" href="{{ url_for('home') }}">Back</a>
+    </div>
+    <div class="chart">
+        {% for d in stats %}
+        <div class="bar-wrap">
+            <div class="bar" style="height: {{ 12 + (d.minutes / scale) * 180 }}px;" title="{{ d.date }}: {{ d.minutes }}m">
+                <span class="bar-value">{{ d.minutes }}</span>
+            </div>
+            <div class="bar-label">{{ d.label }}</div>
+        </div>
+        {% endfor %}
+    </div>
+</body>
+</html>
+    """
+    return render_template_string(
+        html,
+        user=user,
+        stats=stats,
+        avg_minutes=avg_minutes,
+        scale=scale,
     )
 
 
