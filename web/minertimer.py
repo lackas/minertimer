@@ -60,9 +60,9 @@ PLAYERS_TEMPLATE = """
     {% set offset = info.max_time %}
     <div class="buttons">
     {% for t in increments %}
-        <a class="button" href="/increase?user={{ user }}&time={{ t * 60 + offset }}">+{{ t }}</a>
+        <button class="button" onclick="postIncrease('{{ user }}', {{ t * 60 + offset }})">+{{ t }}</button>
     {% endfor %}
-    <a class="button stop" href="/increase?user={{ user }}&time={{ info.played if info.played > 0 else 1 }}&stop=1">Stop</a>
+    <button class="button stop" onclick="postIncrease('{{ user }}', {{ info.played if info.played > 0 else 1 }}, 1)">Stop</button>
     </div>
     {% endif %}
     <hr/>
@@ -402,6 +402,35 @@ async function refreshPlayers() {
     }
 }
 setInterval(refreshPlayers, 10000);
+
+function postIncrease(user, time, stop=0) {
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '/increase';
+
+    const userField = document.createElement('input');
+    userField.type = 'hidden';
+    userField.name = 'user';
+    userField.value = user;
+    form.appendChild(userField);
+
+    const timeField = document.createElement('input');
+    timeField.type = 'hidden';
+    timeField.name = 'time';
+    timeField.value = time;
+    form.appendChild(timeField);
+
+    if (stop) {
+        const stopField = document.createElement('input');
+        stopField.type = 'hidden';
+        stopField.name = 'stop';
+        stopField.value = stop;
+        form.appendChild(stopField);
+    }
+
+    document.body.appendChild(form);
+    form.submit();
+}
 </script>
 <div class="date-badge">{{ current_date }}</div>
 </body>
@@ -425,11 +454,11 @@ def home():
     return _render_dashboard()
 
 
-@app.get("/increase")
+@app.route("/increase", methods=["POST"])
 def increase():
-    user = request.args.get("user")
-    time_param = request.args.get("time")
-    stop_flag = request.args.get("stop")
+    user = request.form.get("user")
+    time_param = request.form.get("time")
+    stop_flag = request.form.get("stop")
 
     if user and time_param:
         user_meta = _load_users()
