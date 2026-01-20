@@ -19,6 +19,6 @@ Or can check using: launchctl print system/com.soferio.minertimer_daily_timer.pl
     <true/>
 
     <key>KeepAlive</key>
-    <false/>
+    <true/>
 </dict>
 </plist>

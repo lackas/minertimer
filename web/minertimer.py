@@ -32,6 +32,7 @@ DB_DIR.mkdir(exist_ok=True)
 PASSWORD_FILE = DB_DIR / "password"
 DEFAULT_LIMIT_SECONDS = 30 * 60
 INCREMENTS = [5, 15, 30, 60]
+CLIENT_VERSION = "1"
 API_TOKEN = os.environ.get("API_TOKEN", "")
 NOTIFICATION_URL = os.environ.get("NOTIFICATION_URL", "http://minecraft.lackas.net/update")
 ASSETS_DIR = Path("/app/assets")
@@ -237,6 +238,11 @@ def update(user: str, date: str, played: int, client_max: int):
     _write_state(path, played, current_max)
 
     return str(current_max), 200, {"Content-Type": "text/plain"}
+
+
+@app.get("/version")
+def version():
+    return CLIENT_VERSION, 200, {"Content-Type": "text/plain"}
 
 
 def _render_dashboard(message: str | None = None):

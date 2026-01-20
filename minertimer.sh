@@ -5,6 +5,8 @@
 # Developed and owned by Soferio Pty Limited.
 ###
 
+VERSION="1"
+
 # Load environment overrides (API token, URL, defaults)
 ENV_FILE="/Users/Shared/minertimer/.env"
 if [ -f "$ENV_FILE" ]; then
@@ -86,6 +88,10 @@ while true; do
             # echo "RESPONSE: $res"
             if [[ $? -eq 0 && "$res" =~ ^[0-9]+$ && $res -ne $TIME_LIMIT ]]; then
                 echo "Updating TIME_LIMIT from $TIME_LIMIT to $res ($TOTAL_PLAYED_TIME played)"
+                if (( res > TIME_LIMIT )); then
+                    increase_minutes=$(( (res - TIME_LIMIT) / 60 ))
+                    say "Time extension of $increase_minutes minutes granted"
+                fi
                 TIME_LIMIT="$res"
                 REMAINING=$((TIME_LIMIT - TOTAL_PLAYED_TIME))
                 if (( REMAINING > 300 )); then
@@ -144,6 +150,21 @@ while true; do
         DISPLAY_5_MIN_WARNING=true
         DISPLAY_1_MIN_WARNING=true
         write_log
+
+        # Check for updates
+        BASE_URL="${NOTIFICATION_URL%/update}"
+        server_version=$(curl "${CURL_BASE_ARGS[@]}" "$BASE_URL/version" 2>/dev/null)
+        if [ -n "$server_version" ] && [ "$server_version" != "$VERSION" ]; then
+            echo "Update available: $VERSION -> $server_version"
+            curl "${CURL_BASE_ARGS[@]}" "$BASE_URL/install/minertimer.sh" -o /tmp/minertimer_new.sh 2>/dev/null
+            if [ -s /tmp/minertimer_new.sh ] && head -1 /tmp/minertimer_new.sh | grep -q '^#!/bin/zsh'; then
+                cp /tmp/minertimer_new.sh /Users/Shared/minertimer/minertimer.sh
+                chmod +x /Users/Shared/minertimer/minertimer.sh
+                rm /tmp/minertimer_new.sh
+                echo "Updated to version $server_version, restarting..."
+                exit 0
+            fi
+        fi
     fi
 done
 
