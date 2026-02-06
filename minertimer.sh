@@ -19,7 +19,7 @@ fi
 TIME_LIMIT_DEFAULT=${TIME_LIMIT_DEFAULT:-1800}
 DISPLAY_5_MIN_WARNING=true
 DISPLAY_1_MIN_WARNING=true
-NOTIFICATION_URL=${NOTIFICATION_URL:-"http://minecraft.lackas.net/update"}
+NOTIFICATION_URL=${NOTIFICATION_URL:-"http://minertimer.lackas.net/update"}
 API_TOKEN=${API_TOKEN:-""}
 CURL_HEADER_FILE=${CURL_HEADER_FILE:-"/Users/Shared/minertimer/.curl_headers"}
 
