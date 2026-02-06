@@ -5,7 +5,8 @@
 # Developed and owned by Soferio Pty Limited.
 ###
 
-VERSION="1"
+VERSION="2"
+DEBUG_FILE="/Users/Shared/minertimer/debug"
 
 # Load environment overrides (API token, URL, defaults)
 ENV_FILE="/Users/Shared/minertimer/.env"
@@ -76,7 +77,15 @@ if [ -s "$CURL_HEADER_FILE" ]; then
 fi
 
 while true; do
-    
+    # Toggle debug tracing based on debug file
+    if [ -f "$DEBUG_FILE" ]; then
+        [[ ! -o xtrace ]] && echo "Debug enabled"
+        set -x
+    else
+        [[ -o xtrace ]] && echo "Debug disabled"
+        set +x
+    fi
+
     MINECRAFT_PIDS=$(ps aux | grep -Eiww "[M]inecraft|[N]oRiskClient|[M]odrinthApp/meta" | awk '{print $2}')
     MINECRAFT_UID=$(ps aux | grep -Eiww "[M]inecraft|[N]oRiskClient|[M]odrinthApp/meta" | awk '{print $1}' | head -1 )
     # If Minecraft is running
@@ -85,8 +94,13 @@ while true; do
         if [ -n "$NOTIFICATION_URL" ]; then
             url="$NOTIFICATION_URL/$MINECRAFT_UID/$CURRENT_DATE/$TOTAL_PLAYED_TIME/$TIME_LIMIT"
             res=$(curl "${CURL_BASE_ARGS[@]}" "$url")
-            # echo "RESPONSE: $res"
-            if [[ $? -eq 0 && "$res" =~ ^[0-9]+$ && $res -ne $TIME_LIMIT ]]; then
+            curl_exit=$?
+            if [[ $curl_exit -ne 0 ]]; then
+                echo "curl failed (exit $curl_exit) for $url"
+            elif [[ ! "$res" =~ ^[0-9]+$ ]]; then
+                echo "Unexpected server response: '$res'"
+            fi
+            if [[ $curl_exit -eq 0 && "$res" =~ ^[0-9]+$ && $res -ne $TIME_LIMIT ]]; then
                 echo "Updating TIME_LIMIT from $TIME_LIMIT to $res ($TOTAL_PLAYED_TIME played)"
                 if (( res > TIME_LIMIT )); then
                     increase_minutes=$(( (res - TIME_LIMIT) / 60 ))

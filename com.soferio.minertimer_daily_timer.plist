@@ -20,5 +20,10 @@ Or can check using: launchctl print system/com.soferio.minertimer_daily_timer.pl
 
     <key>KeepAlive</key>
     <true/>
+
+    <key>StandardOutPath</key>
+    <string>/var/lib/minertimer/minertimer.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/lib/minertimer/minertimer.log</string>
 </dict>
 </plist>
