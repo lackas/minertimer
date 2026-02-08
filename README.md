@@ -1,35 +1,112 @@
-### MINERTIMER SYSTEM FOR LIMITING CHILDRENS' USE OF MINECRAFT (JAVA Edition) ON MAC COMPUTERS
+# MinerTimer
 
-Apple's screentime system is of no use in limiting childrens' use of Minecraft (Java edition) on Macintosh computers. You can read a discussion of this unresolved issue [[here]]( https://bugs.mojang.com/browse/MCL-14705?page=com.atlassian.jira.plugin.system.issuetabpanels%3Acomment-tabpanel&showAll=true).
+Parental control system for limiting Minecraft playtime (Java & Bedrock Edition) on macOS and Windows.
 
-This project aims to fix that problem. It is a zsh bash script developed by a parent developer (for Soferio Pty Limited) to allow other technically skilled parents to limit Minecraft java edition use by a child on a macos system.
+## Overview
 
-## Tested successfully
-The install, uninstall and active scripts have been tested and work at least on a Macbook running Sonoma 14.1.2.
+MinerTimer runs a lightweight background daemon that monitors Minecraft processes, tracks daily playtime, and enforces configurable time limits. Parents manage settings through a web dashboard.
 
-## Overview of how it operates
+### Features
 
- Once you follow the instructions below and install the script, it creates a background process which will stop minecraft (even mid-game) after 30 min of total use per day. A short sound will play when shutdown occurs. There is no warning prior to the 30min curfew. 
+- Automatic detection of Minecraft Java Edition, Bedrock Edition, NoRiskClient, and Modrinth
+- Configurable daily time limits (default: 30 minutes)
+- Web dashboard for real-time monitoring and time management
+- Voice and notification warnings before time expires (5 min, 1 min)
+- Admin can extend or revoke time remotely via the web UI
+- Per-user playtime tracking with 30-day statistics
+- Auto-update: clients update themselves from the server daily
+- Multi-platform: macOS (LaunchDaemon) and Windows (NSSM service or Scheduled Task)
 
- *Warning*: If there are any other processes, or applications, with "minecraft" in their name, they will also be stopped immediately.
+### Architecture
 
- *Warning*: the Minecraft application will not be able to be re-opened until the next day, when the next 30-minute budget will be allowed. If you remove the program (using the uninstall script), then the limit will disappear.
+```
+[macOS Client]  ──>  [Flask Web Server]  <──  [Admin Browser]
+[Windows Client] ──>     (Docker)
+```
 
-## NO LIABILITY
-But it depends on the reader being sufficiently technically skilled to install and run scripts in 'Terminal'. If you do not have such competence, you will need to find a colleague to assist you because you can damage your system if you do not know what you are doing.
-No liability accepted for any losses caused by use of code. Review code and use at own risk. No support is provided for the use of this code.
+- **Clients** check for Minecraft every 30 seconds, report playtime to the server, and kill the game when time runs out
+- **Server** stores playtime state, serves the admin dashboard, and distributes client installers
+- **Dashboard** shows live player status, lets admins adjust time limits, and provides setup instructions
 
-## VERSION AND COPYRIGHT
-Version 0.9 - Currently under development.
-Copyright held by Soferio Pty Ltd
+## Installation
 
-## INDEPENDENT PROJECT
-This is an independent third-party project, no affiliation with, or endorsemnent by Mojang or Minecraft.
+### Server (Docker)
 
-### INSTALLATION and UNINSTALLATION INSTRUCTIONS
+```bash
+docker compose -f web/docker-compose.yml up -d
+```
 
-To install the system copy all files to a single directory and then go to terminal, go the directory where those files are located, and run "sudo zsh install_minertimer.sh". You may need to enter your password. To uninstall system, again go to that directory and run "sudo zsh uninstall_minertimer.sh".
+Configure via `web/.env` (generate defaults with `bash web/setup-env.sh`):
+- `SECRET_KEY` - Flask session secret
+- `API_TOKEN` - Client authentication token
+- `TIMEZONE` - Default: `Europe/Berlin`
+- `NOTIFICATION_URL` - Client reporting URL
 
-### SUPPORT FURTHER DEVELOPMENT
-If our code helps you limit your child's Minecraft use to a reasonable amount, please donate here:
-[![Donate](https://img.shields.io/badge/Donate-Stripe-green.svg)](https://donate.stripe.com/14kaER0xs4L13cI000). Note that donating does not entitle anyone to any support services in relation to this program. No support will be provided. This is entirely a hobby project and is provided for free and at users' own risk.
+### Client: macOS
+
+The easiest way is to log into the web dashboard as admin, click **Setup**, and download the macOS installer. Then run:
+
+```bash
+sudo bash ~/Downloads/setup.txt
+```
+
+Or install manually:
+
+```bash
+sudo bash install_minertimer.sh
+```
+
+### Client: Windows
+
+Log into the web dashboard as admin, click **Setup**, and download the Windows installer. Run in an Administrator PowerShell:
+
+```powershell
+Set-ExecutionPolicy Bypass -Scope Process -Force
+& "$env:USERPROFILE\Downloads\setup-win.ps1"
+```
+
+Or install manually with NSSM for a proper Windows Service:
+
+```powershell
+.\install_minertimer_win.ps1                   # requires nssm.exe in PATH
+.\install_minertimer_win.ps1 -UseTaskScheduler  # no third-party tools needed
+```
+
+NSSM can be downloaded from [nssm.cc](https://nssm.cc/release/nssm-2.24.zip).
+
+### Uninstall
+
+**macOS:**
+```bash
+sudo bash uninstall_minertimer.sh
+```
+
+**Windows:**
+```powershell
+.\uninstall_minertimer_win.ps1
+```
+
+## User Management
+
+Edit `web/db/password` (format: `user:password:role:default_minutes`):
+
+```
+alice:Sunshine42:user:30
+charlie:Library11:admin:
+```
+
+Roles: `user` (can only view own stats), `admin` (full control).
+
+## Attribution
+
+Originally created by [Soferio Pty Ltd](https://github.com/soferio/minertimer) as a macOS-only shell script with a fixed 30-minute limit.
+
+This fork is a substantial rewrite adding the web dashboard, REST API, multi-user support, configurable time limits, Windows support, auto-update, voice warnings, and per-user statistics.
+
+## License
+
+MIT License. See [LICENCE.txt](LICENCE.txt).
+
+## Disclaimer
+
+This is an independent project with no affiliation with or endorsement by Mojang or Minecraft.

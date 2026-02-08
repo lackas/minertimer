@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY web/minertimer.py /app/
 RUN mkdir -p /app/assets
 COPY minertimer.sh /app/assets/minertimer.sh
+COPY minertimer.ps1 /app/assets/minertimer.ps1
 COPY com.soferio.minertimer_daily_timer.plist /app/assets/com.soferio.minertimer_daily_timer.plist
 COPY web/assets/ /app/assets/
 

@@ -38,6 +38,7 @@ NOTIFICATION_URL = os.environ.get("NOTIFICATION_URL", "https://minertimer.lackas
 ASSETS_DIR = Path("/app/assets")
 PLIST_PATH = ASSETS_DIR / "com.soferio.minertimer_daily_timer.plist"
 MINERTIMER_PATH = ASSETS_DIR / "minertimer.sh"
+MINERTIMER_WIN_PATH = ASSETS_DIR / "minertimer.ps1"
 TZ_NAME = os.environ.get("TIMEZONE", "Europe/Berlin")
 try:
     TZ = ZoneInfo(TZ_NAME)
@@ -380,6 +381,7 @@ def _render_dashboard(message: str | None = None):
     <div class="login-status">
         {% if current_user %}
             <div>Logged in as <strong>{{ current_user }}</strong> ({{ current_role }})</div>
+            {% if current_role == 'admin' %}<a class="button" href="{{ url_for('setup_guide') }}" style="background-color:#27ae60; box-shadow:0 9px #1e8449;">Setup</a>{% endif %}
             <a class="button logout" href="{{ url_for('logout') }}">Logout</a>
         {% else %}
             <form method="post" action="{{ url_for('login') }}" style="width: 100%; display: flex; gap: 6px; flex-wrap: wrap; align-items: center;">
@@ -575,6 +577,208 @@ def install_script():
         script,
         mimetype="text/plain",
         headers={"Content-Disposition": "attachment; filename=setup.txt"},
+    )
+
+
+@app.get("/install/minertimer.ps1")
+def download_minertimer_win():
+    if not MINERTIMER_WIN_PATH.exists():
+        abort(500)
+    return send_file(
+        MINERTIMER_WIN_PATH,
+        mimetype="text/plain",
+        as_attachment=True,
+        download_name="minertimer.ps1",
+    )
+
+
+@app.get("/install/win")
+def install_script_win():
+    _require_admin_or_401()
+    api_token = API_TOKEN
+    notif_url = NOTIFICATION_URL
+
+    try:
+        minertimer_content = MINERTIMER_WIN_PATH.read_text()
+    except OSError:
+        abort(500)
+
+    try:
+        template = (ASSETS_DIR / "setup-template-win.ps1").read_text()
+    except OSError:
+        abort(500)
+
+    script = (
+        template.replace("__MINERTIMER_CONTENT__", minertimer_content)
+        .replace("__API_TOKEN__", api_token)
+        .replace("__NOTIFICATION_URL__", notif_url)
+    )
+
+    return Response(
+        script,
+        mimetype="text/plain",
+        headers={"Content-Disposition": "attachment; filename=setup-win.ps1"},
+    )
+
+
+@app.get("/setup")
+def setup_guide():
+    user_meta = _load_users()
+    _, _, is_admin = _session_context(user_meta)
+    if not is_admin:
+        abort(403)
+
+    notif_url = NOTIFICATION_URL
+    base_url = notif_url.rsplit("/update", 1)[0] if "/update" in notif_url else notif_url
+
+    html = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>MinerTimer Setup</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/skeleton/2.0.4/skeleton.min.css" />
+    <style>
+        body { padding: 18px; }
+        .container { width: 90%; max-width: 700px; margin: 0 auto; }
+        .button {
+            display: inline-flex; align-items: center; justify-content: center;
+            margin: 5px; min-height: 42px; padding: 10px 16px;
+            font-size: 16px; font-weight: 600; cursor: pointer;
+            text-decoration: none; color: #fff; background-color: #6C7A89;
+            border: none; border-radius: 999px; box-shadow: 0 9px #999;
+        }
+        .button:hover { background-color: #3E5060; color: #f5a623; }
+        .button.dl { background-color: #2980b9; box-shadow: 0 9px #1f618d; }
+        .button.dl:hover { background-color: #2471a3; color: #fff; }
+        .button.ext { background-color: #8e44ad; box-shadow: 0 9px #6c3483; }
+        .button.ext:hover { background-color: #7d3c98; color: #fff; }
+        .link-back { text-decoration: none; }
+        .section { margin: 24px 0; padding: 16px; background: #f8f9fa; border-radius: 10px; }
+        .section h4 { margin-top: 0; }
+        code { background: #eee; padding: 2px 6px; border-radius: 4px; font-size: 14px; }
+        pre { background: #2c3e50; color: #ecf0f1; padding: 14px; border-radius: 8px;
+              overflow-x: auto; font-size: 13px; line-height: 1.5; }
+        .step { margin: 10px 0; padding-left: 8px; }
+        .step-num { display: inline-block; width: 24px; height: 24px; line-height: 24px;
+                    text-align: center; background: #2980b9; color: #fff; border-radius: 50%;
+                    font-size: 13px; font-weight: 700; margin-right: 6px; }
+        .downloads { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+        .note { background: #fef9e7; border-left: 4px solid #f39c12; padding: 10px 14px;
+                border-radius: 4px; margin: 10px 0; font-size: 14px; }
+        hr { margin: 20px 0; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+        <h2 style="margin: 0;">MinerTimer Setup</h2>
+        <a class="button link-back" href="{{ url_for('home') }}">Back</a>
+    </div>
+    <hr/>
+
+    <!-- ===== macOS ===== -->
+    <div class="section">
+        <h3>macOS</h3>
+        <h4>Quick Install (recommended)</h4>
+        <div class="downloads">
+            <a class="button dl" href="{{ url_for('install_script') }}">Download macOS Installer</a>
+        </div>
+        <p>Run the downloaded file in Terminal:</p>
+        <pre>sudo bash ~/Downloads/setup.txt</pre>
+        <p>This installs the daemon, configures the API token, and starts monitoring automatically.</p>
+
+        <h4>Manual Install</h4>
+        <div class="step"><span class="step-num">1</span> Download the client script:</div>
+        <div class="downloads">
+            <a class="button dl" href="{{ url_for('download_minertimer') }}">Download minertimer.sh</a>
+        </div>
+        <div class="step"><span class="step-num">2</span> Copy to <code>/Users/Shared/minertimer/</code> and create <code>.env</code>:</div>
+        <pre>sudo mkdir -p /Users/Shared/minertimer
+sudo cp minertimer.sh /Users/Shared/minertimer/
+sudo chmod +x /Users/Shared/minertimer/minertimer.sh
+
+sudo tee /Users/Shared/minertimer/.env > /dev/null &lt;&lt;EOF
+API_TOKEN={{ api_token }}
+NOTIFICATION_URL={{ notification_url }}
+EOF
+sudo chmod 600 /Users/Shared/minertimer/.env</pre>
+        <div class="step"><span class="step-num">3</span> Register as LaunchDaemon (starts on boot).</div>
+
+        <h4>Verify</h4>
+        <pre>sudo launchctl list | grep com.soferio.minertimer_daily_timer</pre>
+    </div>
+
+    <!-- ===== Windows ===== -->
+    <div class="section">
+        <h3>Windows</h3>
+        <h4>Quick Install (recommended)</h4>
+        <div class="downloads">
+            <a class="button dl" href="{{ url_for('install_script_win') }}">Download Windows Installer</a>
+        </div>
+        <p>Run the downloaded file in an <strong>Administrator PowerShell</strong>:</p>
+        <pre>Set-ExecutionPolicy Bypass -Scope Process -Force
+&amp; "$env:USERPROFILE\\Downloads\\setup-win.ps1"</pre>
+        <p>This installs the script to <code>C:\\ProgramData\\minertimer</code> and registers a Scheduled Task that runs at startup.</p>
+
+        <h4>Manual Install with NSSM (Windows Service)</h4>
+        <div class="note">
+            NSSM (Non-Sucking Service Manager) creates a proper Windows Service with
+            auto-restart and log rotation. It needs to be installed separately.
+        </div>
+        <div class="downloads">
+            <a class="button ext" href="https://nssm.cc/release/nssm-2.24.zip" target="_blank" rel="noopener">Download NSSM (nssm.cc)</a>
+            <a class="button dl" href="{{ url_for('download_minertimer_win') }}">Download minertimer.ps1</a>
+        </div>
+        <div class="step"><span class="step-num">1</span> Download and extract <strong>nssm.exe</strong> from the ZIP (use the <code>win64</code> folder).</div>
+        <div class="step"><span class="step-num">2</span> Place <code>nssm.exe</code> somewhere permanent (e.g. <code>C:\\tools\\nssm.exe</code>).</div>
+        <div class="step"><span class="step-num">3</span> Copy <code>minertimer.ps1</code> to <code>C:\\ProgramData\\minertimer\\</code>:</div>
+        <pre>New-Item -ItemType Directory -Path "C:\\ProgramData\\minertimer" -Force
+Copy-Item minertimer.ps1 "C:\\ProgramData\\minertimer\\"</pre>
+        <div class="step"><span class="step-num">4</span> Create the config file <code>C:\\ProgramData\\minertimer\\.env</code>:</div>
+        <pre>@"
+API_TOKEN={{ api_token }}
+NOTIFICATION_URL={{ notification_url }}
+TIME_LIMIT_DEFAULT=1800
+"@ | Set-Content "C:\\ProgramData\\minertimer\\.env"</pre>
+        <div class="step"><span class="step-num">5</span> Install as a Windows Service using NSSM:</div>
+        <pre>C:\\tools\\nssm.exe install MinerTimer powershell.exe "-ExecutionPolicy Bypass -WindowStyle Hidden -File C:\\ProgramData\\minertimer\\minertimer.ps1"
+C:\\tools\\nssm.exe set MinerTimer DisplayName "MinerTimer"
+C:\\tools\\nssm.exe set MinerTimer Start SERVICE_AUTO_START
+C:\\tools\\nssm.exe set MinerTimer AppExit Default Restart
+C:\\tools\\nssm.exe start MinerTimer</pre>
+
+        <h4>Verify</h4>
+        <pre># Scheduled Task:
+Get-ScheduledTask -TaskName MinerTimer
+
+# NSSM Service:
+Get-Service MinerTimer</pre>
+    </div>
+
+    <!-- ===== Uninstall ===== -->
+    <div class="section">
+        <h3>Uninstall</h3>
+        <h4>macOS</h4>
+        <pre>sudo launchctl bootout system/com.soferio.minertimer_daily_timer
+sudo rm -rf /Users/Shared/minertimer
+sudo rm /Library/LaunchDaemons/com.soferio.minertimer_daily_timer.plist</pre>
+        <h4>Windows (Scheduled Task)</h4>
+        <pre>Unregister-ScheduledTask -TaskName MinerTimer -Confirm:$false
+Remove-Item "C:\\ProgramData\\minertimer" -Recurse -Force</pre>
+        <h4>Windows (NSSM Service)</h4>
+        <pre>nssm stop MinerTimer
+nssm remove MinerTimer confirm
+Remove-Item "C:\\ProgramData\\minertimer" -Recurse -Force</pre>
+    </div>
+</div>
+</body>
+</html>
+"""
+    return render_template_string(
+        html,
+        api_token=API_TOKEN,
+        notification_url=NOTIFICATION_URL,
     )
 
 
