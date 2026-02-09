@@ -30,10 +30,12 @@ if (-not (Test-Path $EnvFile)) {
     # Restrict permissions
     $acl = Get-Acl $EnvFile
     $acl.SetAccessRuleProtection($true, $false)
+    $adminSid = New-Object System.Security.Principal.SecurityIdentifier("S-1-5-32-544")
+    $systemSid = New-Object System.Security.Principal.SecurityIdentifier("S-1-5-18")
     $adminRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "BUILTIN\Administrators", "FullControl", "Allow")
+        $adminSid, "FullControl", "Allow")
     $systemRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "NT AUTHORITY\SYSTEM", "FullControl", "Allow")
+        $systemSid, "FullControl", "Allow")
     $acl.AddAccessRule($adminRule)
     $acl.AddAccessRule($systemRule)
     Set-Acl $EnvFile $acl
