@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import logging
 import os
 import re
 from datetime import datetime, timedelta
@@ -19,6 +20,8 @@ from flask import (
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "change-me")
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("minertimer")
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
@@ -238,6 +241,7 @@ def update(user: str, date: str, played: int, client_max: int):
 
     # Ignore the client max; web UI is authoritative.
     _write_state(path, played, current_max)
+    log.info("update: %s played=%dm/%dm", user, played // 60, current_max // 60)
 
     return str(current_max), 200, {"Content-Type": "text/plain"}
 
@@ -498,6 +502,7 @@ def increase():
             message = f"Increased time for {user} to {new_max // 60}min"
 
         _write_state(path, current_played, new_max)
+        log.info("increase: %s max=%dm by %s%s", user, new_max // 60, session.get("user"), " (stop)" if stop_flag else "")
 
         return _render_dashboard(message)
 
@@ -511,10 +516,12 @@ def login():
     users = _load_users()
     meta = users.get(username)
     if not meta or password != meta.get("password"):
+        log.info("login failed: %s", username)
         return _render_dashboard("Login failed")
     session.clear()
     session.permanent = True
     session["user"] = username
+    log.info("login: %s (%s)", username, meta.get("role"))
     return redirect(url_for("home"))
 
 
