@@ -218,6 +218,7 @@ def _daily_stats(user: str, days: int = 30) -> list[dict]:
 
 @app.get("/update/<user>/<date>/<int:played>/<int:client_max>")
 def update(user: str, date: str, played: int, client_max: int):
+    user = user.lower()
     # if API_TOKEN and request.headers.get("X-API-Token") != API_TOKEN:
     #     abort(401)
     if not (_valid_user(user) and _valid_date(date)):
