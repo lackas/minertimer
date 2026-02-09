@@ -62,7 +62,7 @@ API_TOKEN=$(generate_uuid)
 cat > "$ENV_FILE" <<EOF
 SECRET_KEY=$SECRET_KEY
 API_TOKEN=$API_TOKEN
-NOTIFICATION_URL=http://minecraft.lackas.net/update
+NOTIFICATION_URL=https://minertimer.lackas.net/update
 EOF
 
 echo "Created $ENV_FILE with random SECRET_KEY and API_TOKEN."
