@@ -87,9 +87,9 @@ function Get-MinecraftProcesses {
         }
     } catch {}
 
-    # Check for Bedrock Edition (Minecraft.Windows), NoRiskClient, Modrinth
+    # Check for Minecraft (launcher/Bedrock), NoRiskClient, Modrinth
     foreach ($proc in (Get-Process -ErrorAction SilentlyContinue)) {
-        if ($proc.ProcessName -imatch 'Minecraft\.Windows|NoRiskClient|Modrinth') {
+        if ($proc.ProcessName -imatch '^Minecraft|NoRiskClient|Modrinth') {
             if ($proc.Id -notin $found.Id) {
                 [void]$found.Add($proc)
             }
