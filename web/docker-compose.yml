@@ -10,3 +10,9 @@ services:
     env_file:
       - .env
     restart: unless-stopped
+    networks:
+      - wtb-shared
+
+networks:
+  wtb-shared:
+    external: true
