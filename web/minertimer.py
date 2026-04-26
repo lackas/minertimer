@@ -898,6 +898,57 @@ def user_stats(user: str):
     )
 
 
+def _run_check(fn):
+    try:
+        return fn()
+    except Exception as exc:
+        return f"ERROR: {exc}"
+
+
+def _check_db_dir() -> str:
+    probe = DB_DIR / ".watchdog.tmp"
+    probe.write_text("ok")
+    probe.unlink()
+    return "ok"
+
+
+def _check_disk_space() -> str:
+    stat = os.statvfs(DB_DIR)
+    free = stat.f_frsize * stat.f_bavail
+    if free < 100 * 1024 * 1024:
+        return f"ERROR: low disk space ({free // (1024 * 1024)}MB free)"
+    return "ok"
+
+
+def _check_password_file() -> str:
+    if not PASSWORD_FILE.exists():
+        return "ERROR: password file missing"
+    users = _load_users()
+    if not users:
+        return "ERROR: no users loaded"
+    return f"ok ({len(users)} users)"
+
+
+@app.get("/watchdog")
+def watchdog():
+    checks = {
+        "db_dir": _run_check(_check_db_dir),
+        "disk_space": _run_check(_check_disk_space),
+        "users": _run_check(_check_password_file),
+    }
+    overall = "ERROR" if any(v.startswith("ERROR") for v in checks.values()) else "ok"
+    now = _now_local().strftime("%Y-%m-%d %H:%M:%S")
+    body = (
+        f"status: {overall}\n"
+        f"name: MinerTimer\n"
+        f"version: {CLIENT_VERSION}\n"
+        f"time: {now}\n"
+        + "\n".join(f"{k}: {v}" for k, v in checks.items())
+        + "\n"
+    )
+    return Response(body, status=200, mimetype="text/plain")
+
+
 @app.get("/players")
 def players_partial():
     user_meta = _load_users()
