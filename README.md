@@ -8,7 +8,7 @@ MinerTimer runs a lightweight background daemon that monitors Minecraft processe
 
 ### Features
 
-- Automatic detection of Minecraft Java Edition, Bedrock Edition, NoRiskClient, Modrinth, and Dawn (Feather)
+- Automatic detection of Minecraft Java Edition, Bedrock Edition, NoRiskClient, Modrinth, and Dawn (Feather) — the game itself, not the launcher window
 - Dashboard shows the client version each machine reports, and marks it when an auto-update is still pending
 - Configurable daily time limits (default: 30 minutes)
 - Web dashboard for real-time monitoring and time management

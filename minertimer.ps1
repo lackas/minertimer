@@ -5,23 +5,22 @@
 # Port of the macOS minertimer.sh script.
 ###
 
-$VERSION = "3"
+$VERSION = "4"
 $BASE_DIR = Join-Path $env:ProgramData "minertimer"
 
 # Processes that count as "Minecraft is running", mirroring minertimer.sh.
 # Command lines are checked for java/javaw children, process names for the
 # launchers themselves.
 #
-# Dawn (Feather) stores its runtime and libraries under the user's .dawn
-# directory, so the game JVM is recognised by that path rather than by the word
-# "minecraft", which Dawn's own client jar does not contain. "DawnLauncher" is
-# the launcher's user agent token. Both are anchored (a dot or a word boundary
-# in front) so that Chromium's unrelated "dawn" WebGPU flags, e.g.
-# --enable-dawn-features, do not get a browser killed.
-# NOTE: the Dawn parts are derived from a macOS process dump; no Windows
-# installation was available to verify the exact paths.
-$COMMAND_LINE_PATTERN = 'minecraft|\.dawn\\|DawnLauncher'
-$PROCESS_NAME_PATTERN = '^Minecraft|NoRiskClient|Modrinth|^Dawn'
+# The Dawn (Feather) launcher needs no entry of its own: on macOS its game JVM
+# carries "minecraft" several times over (bundled runtime, .minecraft game
+# directory, -Dminecraft.launcher.brand, the net.minecraft.client.main.Main
+# class) while the launcher process does not, so the command-line check already
+# catches the game and deliberately leaves the launcher alone. The time limit
+# is meant to end the game, not to close the launcher window or to count the
+# quota down while a child only browses the launcher's webview.
+$COMMAND_LINE_PATTERN = 'minecraft'
+$PROCESS_NAME_PATTERN = '^Minecraft|NoRiskClient|Modrinth'
 $DEBUG_FILE = Join-Path $BASE_DIR "debug"
 $ENV_FILE = Join-Path $BASE_DIR ".env"
 $LOG_FILE = Join-Path $BASE_DIR "minertimer_playtime.log"
@@ -253,7 +252,14 @@ while ($true) {
                     $scriptPath = Join-Path $BASE_DIR "minertimer.ps1"
                     Set-Content -Path $scriptPath -Value $newScript -Encoding UTF8
                     Write-Host "Updated to version $serverVersion, restarting..."
-                    exit 0
+                    # Exit non-zero on purpose. Under NSSM either code restarts
+                    # the service (AppExit Default Restart), but the Scheduled
+                    # Task variant only has an AtStartup trigger plus
+                    # restart-on-failure: a clean exit 0 ends the task and
+                    # monitoring stays dead until the next reboot. A failure
+                    # exit is what makes Task Scheduler bring it back, within
+                    # the configured minute.
+                    exit 1
                 }
             }
         } catch {

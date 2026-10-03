@@ -5,29 +5,27 @@
 # Developed and owned by Soferio Pty Limited.
 ###
 
-VERSION="3"
+VERSION="4"
 DEBUG_FILE="/Users/Shared/minertimer/debug"
 
 # Processes that count as "Minecraft is running". Each alternative is matched
 # case-insensitively as a whole word against the full `ps aux` line, and the
 # first character sits in brackets so grep never matches its own command line.
 #
-# Dawn (Feather): the bundle path covers the launcher and its embedded browser
-# helpers, the user-data directory covers the game JVM, whose classpath points
-# into ~/.dawn. Deliberately NOT a bare "dawn" — with -w that would also match
-# Chromium flags such as --enable-dawn-features (Dawn is also the name of
-# Chromium's WebGPU backend), and killing someone's browser is a worse failure
-# than missing a minute of playtime. DawnLauncher is the launcher's own user
-# agent token and survives a rename of the app bundle.
+# The Dawn (Feather) launcher needs **no entry of its own**, verified against a
+# real `ps aux` dump of a running session on 2026-10-03: the game JVM carries
+# "minecraft" as a whole word four times over (the bundled runtime under
+# .dawn/cache/minecraft/, the profile's .minecraft game directory,
+# -Dminecraft.launcher.brand and the net.minecraft.client.main.Main class), and
+# so do the in-game Feather web helpers it spawns. The launcher process and its
+# jcef browser helpers carry it nowhere.
 #
-# The `.dawn` alternative carries no trailing slash on purpose: grep -w tests the
-# character *after* the match, so "[.]dawn/" never matches "/.dawn/runtime"
-# (after the slash comes "r", a word character). That dropped the game JVM —
-# the one process that has to die when the time is up — while the launcher and
-# its browser helpers still matched, so the bug would have looked like it worked.
-# The leading dot is what keeps "--enable-dawn-features" and "dawn_unittests"
-# out: they have no dot in front of "dawn".
-PROCESS_PATTERN="[M]inecraft|[N]oRiskClient|[M]odrinthApp/meta|[D]awn [(]Feather[)]|[D]awnLauncher|[.]dawn"
+# That asymmetry is exactly what we want and must not be "improved": the time
+# limit is supposed to end the *game*, not the launcher. Matching the launcher
+# bundle, "DawnLauncher" or ".dawn" would count the quota down while a child
+# only browses the launcher's ad webview, and would close its window when the
+# time is up. Tried that in version 3, reverted here.
+PROCESS_PATTERN="[M]inecraft|[N]oRiskClient|[M]odrinthApp/meta"
 
 # Load environment overrides (API token, URL, defaults)
 ENV_FILE="/Users/Shared/minertimer/.env"
