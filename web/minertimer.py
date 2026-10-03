@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
+import json
 import logging
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -24,6 +25,7 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("minertimer")
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SECURE=True,
     SESSION_COOKIE_SAMESITE="Lax",
     PERMANENT_SESSION_LIFETIME=timedelta(days=365),
 )
@@ -31,11 +33,15 @@ app.config.update(
 BASE_DIR = Path(__file__).resolve().parent
 DB_DIR = BASE_DIR / "db"
 DB_DIR.mkdir(exist_ok=True)
+USER_CONFIG_DIR = DB_DIR / "users"
+USER_CONFIG_DIR.mkdir(exist_ok=True)
+CLIENT_INFO_DIR = DB_DIR / "clients"
+CLIENT_INFO_DIR.mkdir(exist_ok=True)
 
 PASSWORD_FILE = DB_DIR / "password"
 DEFAULT_LIMIT_SECONDS = 30 * 60
 INCREMENTS = [5, 15, 30, 60]
-CLIENT_VERSION = "2"
+CLIENT_VERSION = "3"
 API_TOKEN = os.environ.get("API_TOKEN", "")
 NOTIFICATION_URL = os.environ.get("NOTIFICATION_URL", "https://minertimer.lackas.net/update")
 ASSETS_DIR = Path("/app/assets")
@@ -61,6 +67,14 @@ PLAYERS_TEMPLATE = """
             {% if over %}<span class="over-limit">Time used up</span>{% endif %}
         </h4>
     </div>
+    {% if info.client %}
+    <div class="client-info">
+        Client {{ info.client.version }}{% if info.client.platform %} ({{ info.client.platform }}){% endif %}
+        {%- if client_version and info.client.version != client_version %}
+        <span class="client-stale">&ne; {{ client_version }} on server, update pending</span>
+        {%- endif %}
+    </div>
+    {% endif %}
     {% if increments %}
     {% set offset = info.max_time %}
     <div class="buttons">
@@ -102,6 +116,38 @@ def _read_state(path: Path) -> tuple[int, int] | None:
         return None
 
 
+def _record_client_info(user: str, version: str | None, platform: str | None) -> None:
+    """Remember which client version a machine reported.
+
+    /update has no authentication (the token check is commented out), so the
+    headers are attacker-controlled: both values are whitelisted to a short,
+    harmless character set before they are stored or ever rendered.
+    """
+    if not version:
+        return
+    if not re.match(r"^[\w.+-]{1,20}$", version):
+        return
+    if platform and not re.match(r"^[a-z]{1,16}$", platform):
+        platform = None
+    payload = {
+        "version": version,
+        "platform": platform or "",
+        "last_seen": _now_local().isoformat(timespec="seconds"),
+    }
+    try:
+        (CLIENT_INFO_DIR / f"{user}.json").write_text(json.dumps(payload), encoding="utf-8")
+    except OSError as exc:
+        log.warning("could not store client info for %s: %s", user, exc)
+
+
+def _read_client_info(user: str) -> dict | None:
+    try:
+        data = json.loads((CLIENT_INFO_DIR / f"{user}.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _load_users() -> dict[str, dict]:
     users: dict[str, dict] = {}
     if not PASSWORD_FILE.exists():
@@ -123,20 +169,154 @@ def _load_users() -> dict[str, dict]:
                     default_limit = int(default_time) * 60 if default_time else DEFAULT_LIMIT_SECONDS
                 except ValueError:
                     default_limit = DEFAULT_LIMIT_SECONDS
+                user_config = _load_user_config(name)
                 users[name] = {
                     "password": password,
                     "role": role,
+                    "base_default_limit": default_limit,
                     "default_limit": default_limit,
+                    "config": user_config,
                 }
     except OSError:
         return users
     return users
 
 
+def _load_user_config(user: str) -> dict:
+    path = USER_CONFIG_DIR / f"{user}.json"
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        log.warning("invalid user config: %s", path)
+        return {}
+
+
+def _save_user_config(user: str, config: dict) -> None:
+    path = USER_CONFIG_DIR / f"{user}.json"
+    with path.open("w") as fh:
+        json.dump(config, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+
+
+def _date_override(meta: dict, day: date) -> dict:
+    overrides = meta.get("config", {}).get("overrides", {})
+    dates = overrides.get("dates", {})
+    override = dates.get(day.isoformat(), {})
+    return override if isinstance(override, dict) else {}
+
+
+def _default_limit_for_day(meta: dict, day: date) -> int:
+    base_default = meta.get("base_default_limit", meta.get("default_limit", DEFAULT_LIMIT_SECONDS))
+    config = meta.get("config", {})
+    rules = config.get("rules", {})
+    flags = config.get("flags", {})
+    schedule = rules.get("schedule", {})
+    exam_mode = rules.get("exam_mode", {})
+    override = _date_override(meta, day)
+
+    weekday = day.weekday()
+    if weekday <= 3:
+        scheduled_minutes = schedule.get("mon_thu_minutes")
+    elif weekday <= 6:
+        scheduled_minutes = schedule.get("fri_sun_minutes")
+    else:
+        scheduled_minutes = None
+    if "limit_minutes" in override:
+        scheduled_minutes = override.get("limit_minutes")
+
+    try:
+        limit_seconds = int(scheduled_minutes) * 60 if scheduled_minutes is not None else int(base_default)
+    except (TypeError, ValueError):
+        limit_seconds = int(base_default)
+
+    if exam_mode.get("active") or flags.get("learning_time"):
+        try:
+            reduction_seconds = int(exam_mode.get("reduction_minutes", 0)) * 60
+        except (TypeError, ValueError):
+            reduction_seconds = 0
+        limit_seconds = max(0, limit_seconds - reduction_seconds)
+
+    return limit_seconds
+
+
+def _curfew_deadline_for_day(meta: dict, day: date) -> datetime | None:
+    rules = meta.get("config", {}).get("rules", {})
+    curfew = rules.get("curfew", {})
+    override = _date_override(meta, day)
+    if override.get("disable_curfew"):
+        return None
+    if "curfew" in override:
+        curfew_value = override.get("curfew")
+    else:
+        weekday = day.weekday()
+        if weekday in (4, 5):
+            curfew_value = curfew.get("fri_sat", curfew.get("weekend"))
+        else:
+            curfew_value = curfew.get("school_nights", curfew.get("weekdays"))
+    if not curfew_value:
+        return None
+    match = re.match(r"^(\d{1,2}):(\d{2})$", str(curfew_value))
+    if not match:
+        return None
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    if minute > 59 or hour > 24 or (hour == 24 and minute != 0):
+        return None
+    deadline_day = day + timedelta(days=1) if hour == 24 else day
+    deadline_hour = 0 if hour == 24 else hour
+    return datetime(
+        deadline_day.year,
+        deadline_day.month,
+        deadline_day.day,
+        deadline_hour,
+        minute,
+        tzinfo=TZ,
+    )
+
+
+def _apply_curfew(meta: dict, day: date, played: int, max_time: int, now: datetime | None = None) -> int:
+    deadline = _curfew_deadline_for_day(meta, day)
+    if not deadline:
+        return max_time
+    current_time = now or _now_local()
+    if current_time < deadline:
+        return max_time
+    return min(max_time, played)
+
+
+def _valid_curfew_value(value: str) -> bool:
+    match = re.match(r"^(\d{1,2}):(\d{2})$", value)
+    if not match:
+        return False
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    return minute <= 59 and hour <= 24 and not (hour == 24 and minute != 0)
+
+
 def _session_context(user_meta: dict[str, dict]) -> tuple[str | None, dict | None, bool]:
+    session_cookie_name = app.config.get("SESSION_COOKIE_NAME", "session")
+    has_session_cookie = bool(request.cookies.get(session_cookie_name))
     current_user = session.get("user")
+    if has_session_cookie and not current_user:
+        log.info(
+            "session missing user: host=%s remote=%s ua=%s",
+            request.host,
+            request.remote_addr,
+            request.user_agent.string,
+        )
+        return None, None, False
     current_meta = user_meta.get(current_user)
     if not current_meta:
+        log.info(
+            "session invalidated for missing user: user=%s host=%s remote=%s",
+            current_user,
+            request.host,
+            request.remote_addr,
+        )
         session.clear()
         return None, None, False
     role = current_meta.get("role")
@@ -161,6 +341,7 @@ def _now_local() -> datetime:
 
 def _players_for_today(user_meta: dict, viewer_user: str | None, admin: bool) -> tuple[str, dict]:
     now = _now_local()
+    today_date = now.date()
     today = now.strftime("%Y-%m-%d")
     players: dict[str, dict] = {}
     for name, meta in user_meta.items():
@@ -168,12 +349,14 @@ def _players_for_today(user_meta: dict, viewer_user: str | None, admin: bool) ->
             continue
         if not admin and viewer_user and name != viewer_user:
             continue
-        default_limit = meta.get("default_limit", DEFAULT_LIMIT_SECONDS)
+        default_limit = _default_limit_for_day(meta, today_date)
+        default_limit = _apply_curfew(meta, today_date, 0, default_limit, now)
         players[name] = {
             "played": 0,
             "max_time": default_limit,
             "path": DB_DIR / f"{name}-{today}",
             "last_minutes": None,
+            "client": _read_client_info(name),
         }
 
     for entry in DB_DIR.glob(f"*-{today}"):
@@ -187,12 +370,14 @@ def _players_for_today(user_meta: dict, viewer_user: str | None, admin: bool) ->
         if not admin and viewer_user and user != viewer_user:
             continue
         played, max_time = state
+        max_time = _apply_curfew(meta, today_date, played, max_time, now)
         last_minutes = int((now.timestamp() - entry.stat().st_mtime) / 60)
         players[user] = {
             "played": played,
             "max_time": max_time,
             "path": entry,
             "last_minutes": last_minutes,
+            "client": _read_client_info(user),
         }
 
     return today, players, list(user_meta.keys())
@@ -231,16 +416,29 @@ def update(user: str, date: str, played: int, client_max: int):
 
     path = DB_DIR / f"{user}-{date}"
     user_meta = _load_users()
-    default_limit = user_meta.get(user, {}).get("default_limit", DEFAULT_LIMIT_SECONDS)
+    try:
+        day = datetime.strptime(date, "%Y-%m-%d").date()
+    except ValueError:
+        abort(400)
+    default_limit = _default_limit_for_day(user_meta.get(user, {}), day)
     current_state = _read_state(path)
     current_played = current_state[0] if current_state else 0
     current_max = current_state[1] if current_state else default_limit
+    effective_max = _apply_curfew(user_meta.get(user, {}), day, current_played, current_max)
+    if effective_max != current_max:
+        log.info("curfew applied: %s date=%s played=%dm max=%dm -> %dm", user, date, current_played // 60, current_max // 60, effective_max // 60)
+    current_max = effective_max
 
     # don't allow decrease of played time
     played = max(played, current_played)
 
     # Ignore the client max; web UI is authoritative.
     _write_state(path, played, current_max)
+    _record_client_info(
+        user,
+        request.headers.get("X-Client-Version"),
+        request.headers.get("X-Client-Platform"),
+    )
     log.info("update: %s played=%dm/%dm", user, played // 60, current_max // 60)
 
     return str(current_max), 200, {"Content-Type": "text/plain"}
@@ -252,6 +450,8 @@ def version():
 
 
 def _render_dashboard(message: str | None = None):
+    if message is None:
+        message = session.pop("flash_message", None)
     user_meta = _load_users()
     user_names = list(user_meta.keys())
     current_user, current_meta, is_admin = _session_context(user_meta)
@@ -267,6 +467,7 @@ def _render_dashboard(message: str | None = None):
         PLAYERS_TEMPLATE,
         players=players,
         increments=INCREMENTS if is_admin else [],
+        client_version=CLIENT_VERSION,
     )
     html = """
 <!DOCTYPE html>
@@ -307,6 +508,8 @@ def _render_dashboard(message: str | None = None):
         .active { color: green; }
         .inactive { color: gray; }
         .over-limit { color: #c0392b; }
+        .client-info { font-size: 13px; color: #7f8c8d; margin: -8px 0 6px; }
+        .client-stale { color: #c0392b; }
         .container {
             width: 90%;
             max-width: 600px;
@@ -467,6 +670,11 @@ def home():
     return _render_dashboard()
 
 
+@app.get("/increase")
+def increase_get():
+    return redirect(url_for("home"), code=303)
+
+
 @app.route("/increase", methods=["POST"])
 def increase():
     user = request.form.get("user")
@@ -504,9 +712,9 @@ def increase():
         _write_state(path, current_played, new_max)
         log.info("increase: %s max=%dm by %s%s", user, new_max // 60, session.get("user"), " (stop)" if stop_flag else "")
 
-        return _render_dashboard(message)
+        session["flash_message"] = message
 
-    return _render_dashboard()
+    return redirect(url_for("home"), code=303)
 
 
 @app.post("/login")
@@ -521,12 +729,25 @@ def login():
     session.clear()
     session.permanent = True
     session["user"] = username
-    log.info("login: %s (%s)", username, meta.get("role"))
+    log.info(
+        "login: %s (%s) host=%s remote=%s ua=%s",
+        username,
+        meta.get("role"),
+        request.host,
+        request.remote_addr,
+        request.user_agent.string,
+    )
     return redirect(url_for("home"))
 
 
 @app.get("/logout")
 def logout():
+    log.info(
+        "logout: user=%s host=%s remote=%s",
+        session.get("user"),
+        request.host,
+        request.remote_addr,
+    )
     session.clear()
     return redirect(url_for("home"))
 
@@ -538,6 +759,14 @@ def _require_admin_or_401() -> dict:
         return user_meta
     _, meta, is_admin = _session_context(user_meta)
     if not is_admin:
+        session_cookie_name = app.config.get("SESSION_COOKIE_NAME", "session")
+        log.info(
+            "admin auth failed: host=%s remote=%s cookie_present=%s user=%s",
+            request.host,
+            request.remote_addr,
+            bool(request.cookies.get(session_cookie_name)),
+            session.get("user"),
+        )
         abort(403)
     return user_meta
 
@@ -790,6 +1019,84 @@ Remove-Item "C:\\ProgramData\\minertimer" -Recurse -Force</pre>
     )
 
 
+@app.post("/user/<user>/config")
+def update_user_config(user: str):
+    if not _valid_user(user):
+        abort(404)
+    user_meta = _load_users()
+    _, _, is_admin = _session_context(user_meta)
+    if not is_admin:
+        abort(403)
+    meta = user_meta.get(user)
+    if not meta or meta.get("role") == "admin":
+        abort(404)
+
+    config = meta.get("config", {})
+    if not isinstance(config, dict):
+        config = {}
+    action = request.form.get("action", "")
+
+    if action == "set_learning_time":
+        flags = config.setdefault("flags", {})
+        flags["learning_time"] = request.form.get("learning_time") == "on"
+        _save_user_config(user, config)
+        log.info("user config updated: %s learning_time=%s by %s", user, flags["learning_time"], session.get("user"))
+        return redirect(url_for("user_stats", user=user, message="Lernzeit gespeichert"))
+
+    if action == "save_override":
+        date_str = request.form.get("override_date", "").strip()
+        if not _valid_date(date_str):
+            return redirect(url_for("user_stats", user=user, message="Ungueltiges Datum"))
+        limit_minutes_raw = request.form.get("limit_minutes", "").strip()
+        curfew_raw = request.form.get("curfew", "").strip()
+        disable_curfew = request.form.get("disable_curfew") == "on"
+        notes_raw = request.form.get("notes", "").strip()
+
+        override: dict[str, object] = {}
+        if limit_minutes_raw:
+            try:
+                limit_minutes = int(limit_minutes_raw)
+                if limit_minutes < 0:
+                    raise ValueError
+                override["limit_minutes"] = limit_minutes
+            except ValueError:
+                return redirect(url_for("user_stats", user=user, message="Ungueltiges Tageslimit"))
+        if curfew_raw:
+            if not _valid_curfew_value(curfew_raw):
+                return redirect(url_for("user_stats", user=user, message="Ungueltige Sperrzeit"))
+            override["curfew"] = curfew_raw
+        if disable_curfew:
+            override["disable_curfew"] = True
+        if notes_raw:
+            override["notes"] = notes_raw
+
+        overrides = config.setdefault("overrides", {})
+        dates = overrides.setdefault("dates", {})
+        if override:
+            dates[date_str] = override
+        else:
+            dates.pop(date_str, None)
+        _save_user_config(user, config)
+        log.info("user config updated: %s override=%s by %s", user, date_str, session.get("user"))
+        return redirect(url_for("user_stats", user=user, message="Tages-Override gespeichert"))
+
+    if action == "clear_override":
+        date_str = request.form.get("override_date", "").strip()
+        overrides = config.get("overrides", {})
+        dates = overrides.get("dates", {})
+        if date_str in dates:
+            del dates[date_str]
+            if not dates:
+                overrides.pop("dates", None)
+            if not overrides:
+                config.pop("overrides", None)
+            _save_user_config(user, config)
+            log.info("user config updated: %s override cleared=%s by %s", user, date_str, session.get("user"))
+        return redirect(url_for("user_stats", user=user, message="Tages-Override entfernt"))
+
+    return redirect(url_for("user_stats", user=user, message="Unbekannte Aktion"))
+
+
 @app.get("/user/<user>")
 def user_stats(user: str):
     if not _valid_user(user):
@@ -808,6 +1115,43 @@ def user_stats(user: str):
     avg_minutes = (sum(d["minutes"] for d in stats) / len(stats)) if stats else 0
     max_minutes = max((d["minutes"] for d in stats), default=0)
     scale = max_minutes if max_minutes > 0 else 1
+    config = meta.get("config", {})
+    flags = config.get("flags", {})
+    overrides = config.get("overrides", {}).get("dates", {})
+    today = _now_local().date()
+    override_items = []
+    for date_str in sorted(overrides):
+        override = overrides.get(date_str, {})
+        if not isinstance(override, dict):
+            continue
+        try:
+            if date.fromisoformat(date_str) < today:
+                continue
+        except ValueError:
+            continue
+        override_items.append(
+            {
+                "date": date_str,
+                "limit_minutes": override.get("limit_minutes", ""),
+                "curfew": override.get("curfew", ""),
+                "disable_curfew": bool(override.get("disable_curfew")),
+                "notes": override.get("notes", ""),
+            }
+        )
+    today_limit_minutes = _default_limit_for_day(meta, today) // 60
+    today_override = _date_override(meta, today)
+    if today_override.get("disable_curfew"):
+        today_curfew_label = "aus"
+    elif today_override.get("curfew"):
+        today_curfew_label = str(today_override.get("curfew"))
+    else:
+        weekday = today.weekday()
+        curfew_rules = config.get("rules", {}).get("curfew", {})
+        if weekday in (4, 5):
+            today_curfew_label = str(curfew_rules.get("fri_sat", curfew_rules.get("weekend", "-")))
+        else:
+            today_curfew_label = str(curfew_rules.get("school_nights", curfew_rules.get("weekdays", "-")))
+    message = request.args.get("message", "")
     html = """
 <!DOCTYPE html>
 <html>
@@ -866,6 +1210,102 @@ def user_stats(user: str):
         .link-back {
             text-decoration: none;
         }
+        .panel {
+            margin-top: 24px;
+            padding: 16px;
+            border: 1px solid #dcdcdc;
+            border-radius: 8px;
+            background: #fafafa;
+        }
+        .panel h4 {
+            margin-top: 0;
+        }
+        .inline-form {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: end;
+        }
+        .status {
+            margin-top: 12px;
+            color: #555;
+            font-size: 14px;
+        }
+        .message {
+            margin-top: 12px;
+            padding: 10px 12px;
+            background: #eaf7ea;
+            border: 1px solid #b9dfb9;
+            border-radius: 6px;
+            color: #245c24;
+        }
+        .override-list {
+            margin-top: 16px;
+        }
+        .override-item {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            align-items: center;
+            padding: 12px 14px;
+            margin-top: 10px;
+            border: 1px solid #e3e3e3;
+            border-radius: 8px;
+            background: #fff;
+        }
+        .override-item .override-date {
+            font-size: 15px;
+        }
+        .override-meta {
+            color: #555;
+            font-size: 14px;
+            margin-top: 2px;
+        }
+        .override-item form {
+            margin: 0;
+            flex-shrink: 0;
+        }
+        .override-item .button-remove {
+            margin: 0;
+            height: auto;
+            line-height: 1.4;
+            padding: 4px 12px;
+            color: #b23b3b;
+            border-color: #e0b4b4;
+        }
+        .checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .checkbox-label input {
+            width: auto;
+            margin: 0;
+        }
+        @media (max-width: 600px) {
+            body { padding: 12px; }
+            .inline-form {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 4px;
+            }
+            .panel form label {
+                display: block;
+                width: 100%;
+                margin: 0 0 10px 0;
+            }
+            .panel form input:not([type=checkbox]) {
+                width: 100%;
+            }
+            .override-item {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 10px;
+            }
+            .override-item form {
+                align-self: flex-end;
+            }
+        }
     </style>
 </head>
 <body>
@@ -876,6 +1316,9 @@ def user_stats(user: str):
         </div>
         <a class="button link-back" href="{{ url_for('home') }}">Back</a>
     </div>
+    {% if message %}
+    <div class="message">{{ message }}</div>
+    {% endif %}
     <div class="chart">
         {% for d in stats %}
         <div class="bar-wrap">
@@ -886,6 +1329,73 @@ def user_stats(user: str):
         </div>
         {% endfor %}
     </div>
+    {% if is_admin %}
+    <div class="panel">
+        <h4>Regeln</h4>
+        <form method="post" action="{{ url_for('update_user_config', user=user) }}" class="inline-form">
+            <input type="hidden" name="action" value="set_learning_time">
+            <label class="checkbox-label" style="margin: 0;">
+                <input type="checkbox" name="learning_time" {% if learning_time %}checked{% endif %}>
+                Lernzeit aktiv
+            </label>
+            <button class="button-primary" type="submit">Speichern</button>
+        </form>
+        <div class="status">Heute: {{ today_limit_minutes }} Minuten, Sperrzeit {{ today_curfew_label }}</div>
+    </div>
+
+    <div class="panel">
+        <h4>Tages-Override</h4>
+        <form method="post" action="{{ url_for('update_user_config', user=user) }}">
+            <input type="hidden" name="action" value="save_override">
+            <div class="inline-form">
+                <label>
+                    Datum
+                    <input type="date" name="override_date" required>
+                </label>
+                <label>
+                    Limit Minuten
+                    <input type="number" min="0" name="limit_minutes" placeholder="z.B. 240">
+                </label>
+                <label>
+                    Sperrzeit
+                    <input type="text" name="curfew" placeholder="22:00 oder 24:00">
+                </label>
+                <label class="checkbox-label" style="margin: 0;">
+                    <input type="checkbox" name="disable_curfew">
+                    Sperrzeit aus
+                </label>
+            </div>
+            <label>
+                Notiz
+                <input type="text" name="notes" placeholder="z.B. Feiertag">
+            </label>
+            <button class="button-primary" type="submit">Override speichern</button>
+        </form>
+
+        <div class="override-list">
+            {% for item in override_items %}
+            <div class="override-item">
+                <div>
+                    <strong class="override-date">{{ item.date }}</strong>
+                    <div class="override-meta">
+                        Limit: {{ item.limit_minutes if item.limit_minutes != "" else "-" }},
+                        Sperrzeit: {% if item.disable_curfew %}aus{% else %}{{ item.curfew if item.curfew else "-" }}{% endif %}
+                        {% if item.notes %}, {{ item.notes }}{% endif %}
+                    </div>
+                </div>
+                <form method="post" action="{{ url_for('update_user_config', user=user) }}">
+                    <input type="hidden" name="action" value="clear_override">
+                    <input type="hidden" name="override_date" value="{{ item.date }}">
+                    <button type="submit" class="button-remove">Entfernen</button>
+                </form>
+            </div>
+            {% endfor %}
+            {% if not override_items %}
+            <div class="override-meta">Keine Tages-Overrides gesetzt.</div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
 </body>
 </html>
     """
@@ -895,6 +1405,12 @@ def user_stats(user: str):
         stats=stats,
         avg_minutes=avg_minutes,
         scale=scale,
+        is_admin=is_admin,
+        learning_time=bool(flags.get("learning_time")),
+        today_limit_minutes=today_limit_minutes,
+        today_curfew_label=today_curfew_label,
+        override_items=override_items,
+        message=message,
     )
 
 
@@ -962,6 +1478,7 @@ def players_partial():
         PLAYERS_TEMPLATE,
         players=players,
         increments=INCREMENTS if is_admin else [],
+        client_version=CLIENT_VERSION,
     )
     return Response(html, mimetype="text/html")
 

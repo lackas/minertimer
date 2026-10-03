@@ -5,8 +5,29 @@
 # Developed and owned by Soferio Pty Limited.
 ###
 
-VERSION="2"
+VERSION="3"
 DEBUG_FILE="/Users/Shared/minertimer/debug"
+
+# Processes that count as "Minecraft is running". Each alternative is matched
+# case-insensitively as a whole word against the full `ps aux` line, and the
+# first character sits in brackets so grep never matches its own command line.
+#
+# Dawn (Feather): the bundle path covers the launcher and its embedded browser
+# helpers, the user-data directory covers the game JVM, whose classpath points
+# into ~/.dawn. Deliberately NOT a bare "dawn" — with -w that would also match
+# Chromium flags such as --enable-dawn-features (Dawn is also the name of
+# Chromium's WebGPU backend), and killing someone's browser is a worse failure
+# than missing a minute of playtime. DawnLauncher is the launcher's own user
+# agent token and survives a rename of the app bundle.
+#
+# The `.dawn` alternative carries no trailing slash on purpose: grep -w tests the
+# character *after* the match, so "[.]dawn/" never matches "/.dawn/runtime"
+# (after the slash comes "r", a word character). That dropped the game JVM —
+# the one process that has to die when the time is up — while the launcher and
+# its browser helpers still matched, so the bug would have looked like it worked.
+# The leading dot is what keeps "--enable-dawn-features" and "dawn_unittests"
+# out: they have no dot in front of "dawn".
+PROCESS_PATTERN="[M]inecraft|[N]oRiskClient|[M]odrinthApp/meta|[D]awn [(]Feather[)]|[D]awnLauncher|[.]dawn"
 
 # Load environment overrides (API token, URL, defaults)
 ENV_FILE="/Users/Shared/minertimer/.env"
@@ -70,8 +91,10 @@ if [ -n "$API_TOKEN" ] && [ ! -s "$CURL_HEADER_FILE" ]; then
     (umask 177; printf 'X-API-Token: %s\n' "$API_TOKEN" > "$CURL_HEADER_FILE")
 fi
 
-# Build curl args so the token stays out of process args
-CURL_BASE_ARGS=(-s)
+# Build curl args so the token stays out of process args. The version header
+# lets the dashboard show which client version each machine actually runs —
+# without it there is no way to tell whether an auto-update has landed.
+CURL_BASE_ARGS=(-s -H "X-Client-Version: $VERSION" -H "X-Client-Platform: macos")
 if [ -s "$CURL_HEADER_FILE" ]; then
     CURL_BASE_ARGS+=(-H "@${CURL_HEADER_FILE}")
 fi
@@ -86,8 +109,11 @@ while true; do
         set +x
     fi
 
-    MINECRAFT_PIDS=$(ps aux | grep -Eiww "[M]inecraft|[N]oRiskClient|[M]odrinthApp/meta" | awk '{print $2}')
-    MINECRAFT_UID=$(ps aux | grep -Eiww "[M]inecraft|[N]oRiskClient|[M]odrinthApp/meta" | awk '{print $1}' | head -1 )
+    # One ps snapshot for both values: two separate calls could disagree about
+    # which processes exist, and the pattern would have to be kept in sync twice.
+    MINECRAFT_PS=$(ps aux | grep -Eiww "$PROCESS_PATTERN")
+    MINECRAFT_PIDS=$(echo "$MINECRAFT_PS" | awk '{print $2}')
+    MINECRAFT_UID=$(echo "$MINECRAFT_PS" | awk '{print $1}' | head -1 )
     # If Minecraft is running
     
     if [ -n "$MINECRAFT_PIDS" ]; then

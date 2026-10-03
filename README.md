@@ -8,7 +8,8 @@ MinerTimer runs a lightweight background daemon that monitors Minecraft processe
 
 ### Features
 
-- Automatic detection of Minecraft Java Edition, Bedrock Edition, NoRiskClient, and Modrinth
+- Automatic detection of Minecraft Java Edition, Bedrock Edition, NoRiskClient, Modrinth, and Dawn (Feather)
+- Dashboard shows the client version each machine reports, and marks it when an auto-update is still pending
 - Configurable daily time limits (default: 30 minutes)
 - Web dashboard for real-time monitoring and time management
 - Voice and notification warnings before time expires (5 min, 1 min)
@@ -41,6 +42,22 @@ Configure via `web/.env` (generate defaults with `bash web/setup-env.sh`):
 - `API_TOKEN` - Client authentication token
 - `TIMEZONE` - Default: `Europe/Berlin`
 - `NOTIFICATION_URL` - Client reporting URL
+
+Optional per-child rules can be stored in `web/db/users/<name>.json`. Example fields:
+- `flags.learning_time`
+- `rules.schedule.mon_thu_minutes`
+- `rules.schedule.fri_sun_minutes`
+- `rules.exam_mode.active`
+- `rules.exam_mode.reduction_minutes`
+- `rules.curfew.school_nights`
+- `rules.curfew.fri_sat`
+- `rules.curfew.weekdays`
+- `rules.curfew.weekend`
+- `overrides.dates.<YYYY-MM-DD>.limit_minutes`
+- `overrides.dates.<YYYY-MM-DD>.curfew`
+- `overrides.dates.<YYYY-MM-DD>.disable_curfew`
+
+The server currently applies the schedule, learning-time/exam reduction, and curfew rules to the daily limit. Date overrides can be used for holidays or one-off exceptions. Informational rules such as homework prerequisites or non-transferability can also be documented there for reference.
 
 ### Client: macOS
 

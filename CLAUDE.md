@@ -80,8 +80,11 @@ sudo bash uninstall_minertimer.sh   # Uninstall
 ## Conventions
 
 - **Time units**: Stored as seconds in database, displayed as minutes in UI
-- **Process detection (macOS)**: Matches `[M]inecraft|[N]oRiskClient|[M]odrinthApp/meta`
-- **Process detection (Windows)**: Checks `javaw.exe`/`java.exe` command lines for "minecraft", plus `Minecraft.Windows` (Bedrock), `NoRiskClient`, `Modrinth`
+- **Process detection (macOS)**: single `$PROCESS_PATTERN` in `minertimer.sh`, matched with `grep -Eiww` against `ps aux`: `[M]inecraft|[N]oRiskClient|[M]odrinthApp/meta|[D]awn [(]Feather[)]|[D]awnLauncher|[.]dawn`
+- **Process detection (Windows)**: `$COMMAND_LINE_PATTERN` for `javaw.exe`/`java.exe` command lines, `$PROCESS_NAME_PATTERN` for launcher process names (`Minecraft.Windows` Bedrock, `NoRiskClient`, `Modrinth`, `Dawn`)
+- **Adding a launcher**: match something launcher-specific, never a bare product name. Dawn is also the name of Chromium's WebGPU backend, so a bare `dawn` matches `--enable-dawn-features` and would kill a browser. Mind `grep -w`: it tests the character *after* the match, so a pattern ending in `/` fails on `/.dawn/runtime`. Always verify against a real `ps aux` dump including the game JVM, not just the launcher
+- **Client version reporting**: clients send `X-Client-Version` and `X-Client-Platform` on every `/update`; the server stores them in `web/db/clients/<user>.json` and the dashboard flags a client that differs from `CLIENT_VERSION`. Headers are unauthenticated, so they are whitelisted before being stored
+- **Rolling out a client change**: bump `VERSION` in `minertimer.sh`/`minertimer.ps1` **and** `CLIENT_VERSION` in `web/minertimer.py` together, then rebuild. Clients compare at the daily rollover only, so a change lands the following night
 - **Daily reset**: Calendar-day based using configured TIMEZONE (default: Europe/Berlin)
 - **Time increments**: Admin can add [5, 15, 30, 60] minutes
 

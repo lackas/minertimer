@@ -5,8 +5,23 @@
 # Port of the macOS minertimer.sh script.
 ###
 
-$VERSION = "2"
+$VERSION = "3"
 $BASE_DIR = Join-Path $env:ProgramData "minertimer"
+
+# Processes that count as "Minecraft is running", mirroring minertimer.sh.
+# Command lines are checked for java/javaw children, process names for the
+# launchers themselves.
+#
+# Dawn (Feather) stores its runtime and libraries under the user's .dawn
+# directory, so the game JVM is recognised by that path rather than by the word
+# "minecraft", which Dawn's own client jar does not contain. "DawnLauncher" is
+# the launcher's user agent token. Both are anchored (a dot or a word boundary
+# in front) so that Chromium's unrelated "dawn" WebGPU flags, e.g.
+# --enable-dawn-features, do not get a browser killed.
+# NOTE: the Dawn parts are derived from a macOS process dump; no Windows
+# installation was available to verify the exact paths.
+$COMMAND_LINE_PATTERN = 'minecraft|\.dawn\\|DawnLauncher'
+$PROCESS_NAME_PATTERN = '^Minecraft|NoRiskClient|Modrinth|^Dawn'
 $DEBUG_FILE = Join-Path $BASE_DIR "debug"
 $ENV_FILE = Join-Path $BASE_DIR ".env"
 $LOG_FILE = Join-Path $BASE_DIR "minertimer_playtime.log"
@@ -74,22 +89,22 @@ function Invoke-Speech {
 function Get-MinecraftProcesses {
     $found = [System.Collections.ArrayList]@()
 
-    # Check javaw.exe / java.exe whose command line contains "minecraft"
+    # Check javaw.exe / java.exe whose command line looks like Minecraft
     try {
         $javaProcs = Get-CimInstance Win32_Process `
             -Filter "Name = 'javaw.exe' OR Name = 'java.exe'" `
             -ErrorAction SilentlyContinue
         foreach ($jp in $javaProcs) {
-            if ($jp.CommandLine -imatch 'minecraft') {
+            if ($jp.CommandLine -imatch $COMMAND_LINE_PATTERN) {
                 $p = Get-Process -Id $jp.ProcessId -ErrorAction SilentlyContinue
                 if ($p) { [void]$found.Add($p) }
             }
         }
     } catch {}
 
-    # Check for Minecraft (launcher/Bedrock), NoRiskClient, Modrinth
+    # Check for Minecraft (launcher/Bedrock), NoRiskClient, Modrinth, Dawn
     foreach ($proc in (Get-Process -ErrorAction SilentlyContinue)) {
-        if ($proc.ProcessName -imatch '^Minecraft|NoRiskClient|Modrinth') {
+        if ($proc.ProcessName -imatch $PROCESS_NAME_PATTERN) {
             if ($proc.Id -notin $found.Id) {
                 [void]$found.Add($proc)
             }
@@ -132,8 +147,12 @@ if ($LAST_PLAY_DATE -ne $script:CURRENT_DATE) {
     Write-StateLog
 }
 
-# Build HTTP headers
-$headers = @{}
+# Build HTTP headers. The version header lets the dashboard show which client
+# version each machine actually runs, so a failed auto-update is visible.
+$headers = @{
+    "X-Client-Version"  = $VERSION
+    "X-Client-Platform" = "windows"
+}
 if ($script:API_TOKEN) {
     $headers["X-API-Token"] = $script:API_TOKEN
 }
