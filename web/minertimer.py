@@ -401,20 +401,23 @@ def _night_block_window(meta: dict, now: datetime) -> tuple[datetime, datetime] 
     return start, end
 
 
+def _night_rules_active(meta: dict, day: date, now: datetime) -> bool:
+    """True once the evening's curfew has passed or the night block has begun."""
+    deadline = _curfew_deadline_for_day(meta, day)
+    if deadline and now >= deadline:
+        return True
+    window = _night_block_window(meta, now)
+    return bool(window and window[0] <= now < window[1])
+
+
 def _apply_night_limits(meta: dict, day: date, played: int, max_time: int, now: datetime | None = None) -> int:
     """Cap the day's allowance to what is already played once the night closes.
 
-    Handing back `played` is what ends the session: the client compares its own
-    counter against the limit we return, so an equal value kills the game on the
-    next cycle.
+    This is what the dashboard shows and what gets stored; the answer the client
+    receives is handled in update(), which is stricter.
     """
-    current_time = now or _now_local()
-    deadline = _curfew_deadline_for_day(meta, day)
-    if deadline and current_time >= deadline:
-        max_time = min(max_time, played)
-    window = _night_block_window(meta, current_time)
-    if window and window[0] <= current_time < window[1]:
-        max_time = min(max_time, played)
+    if _night_rules_active(meta, day, now or _now_local()):
+        return min(max_time, played)
     return max_time
 
 
@@ -564,7 +567,8 @@ def update(user: str, date: str, played: int, client_max: int):
     current_state = _read_state(path)
     current_played = current_state[0] if current_state else 0
     current_max = current_state[1] if current_state else default_limit
-    effective_max = _apply_night_limits(user_meta.get(user, {}), day, current_played, current_max)
+    night_stop = _night_rules_active(user_meta.get(user, {}), day, _now_local())
+    effective_max = min(current_max, current_played) if night_stop else current_max
     if effective_max != current_max:
         log.info("night limit applied: %s date=%s played=%dm max=%dm -> %dm", user, date, current_played // 60, current_max // 60, effective_max // 60)
     current_max = effective_max
@@ -580,9 +584,14 @@ def update(user: str, date: str, played: int, client_max: int):
         request.headers.get("X-Client-Platform"),
         request.headers.get("X-Client-Host"),
     )
-    log.info("update: %s played=%dm/%dm", user, played // 60, current_max // 60)
+    log.info("update: %s played=%dm/%dm%s", user, played // 60, current_max // 60, " (night stop)" if night_stop else "")
 
-    return str(current_max), 200, {"Content-Type": "text/plain"}
+    # During the night the answer is a hard 0, not the capped maximum. Capping
+    # only ends the session while the client's counter agrees with ours, and a
+    # client whose counter just reset — day change, or a fresh install after a
+    # self-update — would read any positive limit as permission to play. The
+    # stored maximum keeps the real number for the dashboard.
+    return ("0" if night_stop else str(current_max)), 200, {"Content-Type": "text/plain"}
 
 
 @app.get("/version")
