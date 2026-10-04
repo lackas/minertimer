@@ -180,8 +180,8 @@ def _record_client_info(
     header here is attacker-controlled: each value is whitelisted to a short,
     harmless character set before it is stored or ever rendered.
 
-    One record per machine, not one per user: David plays mostly on the gaming
-    PC and now and then on the Mac, and a single slot would simply show
+    One record per machine, not one per user: a child may play mostly on the
+    gaming PC and now and then on the Mac, and a single slot would simply show
     whichever machine reported last. The other machine's version would be
     invisible — including a Mac that quietly stopped updating itself.
     """
