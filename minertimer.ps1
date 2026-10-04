@@ -5,7 +5,7 @@
 # Port of the macOS minertimer.sh script.
 ###
 
-$VERSION = "4"
+$VERSION = "5"
 $BASE_DIR = Join-Path $env:ProgramData "minertimer"
 
 # Processes that count as "Minecraft is running", mirroring minertimer.sh.
@@ -29,6 +29,9 @@ $LOG_FILE = Join-Path $BASE_DIR "minertimer_playtime.log"
 $script:TIME_LIMIT_DEFAULT = 1800
 $script:NOTIFICATION_URL = "https://minertimer.lackas.net/update"
 $script:API_TOKEN = ""
+# Interval of the self-update check, see Invoke-UpdateCheck. Declared with the
+# other defaults so the .env file can override it.
+$script:UPDATE_CHECK_INTERVAL = 3600
 
 # Load environment overrides
 if (Test-Path $ENV_FILE) {
@@ -47,6 +50,7 @@ $script:TIME_LIMIT = [int]$script:TIME_LIMIT_DEFAULT
 $script:TOTAL_PLAYED_TIME = 0
 $script:DISPLAY_5_MIN_WARNING = $true
 $script:DISPLAY_1_MIN_WARNING = $true
+$script:CYCLE_REMAINDER = 0.0
 
 # Ensure base directory exists
 New-Item -ItemType Directory -Path $BASE_DIR -Force | Out-Null
@@ -147,17 +151,63 @@ if ($LAST_PLAY_DATE -ne $script:CURRENT_DATE) {
 }
 
 # Build HTTP headers. The version header lets the dashboard show which client
-# version each machine actually runs, so a failed auto-update is visible.
-$headers = @{
+# version each machine actually runs, so a failed auto-update is visible. The
+# host header separates the machines of one child: the dashboard keeps one
+# record per machine, so the gaming PC and the Mac both stay visible instead of
+# overwriting each other.
+$script:HEADERS = @{
     "X-Client-Version"  = $VERSION
     "X-Client-Platform" = "windows"
 }
+if ($env:COMPUTERNAME) {
+    $script:HEADERS["X-Client-Host"] = $env:COMPUTERNAME
+}
 if ($script:API_TOKEN) {
-    $headers["X-API-Token"] = $script:API_TOKEN
+    $script:HEADERS["X-API-Token"] = $script:API_TOKEN
+}
+
+# The update check used to hang off the daily rollover, which only fires if the
+# machine is awake when the date changes. It now runs on its own clock
+# ($UPDATE_CHECK_INTERVAL above), so a box that was off at midnight still picks
+# up a new version within the hour.
+#
+# Seeded with "now" rather than the epoch so the first check happens one
+# interval after a start: a self-update that kept installing a version the
+# server disagrees with would otherwise restart in a tight loop.
+$script:LAST_UPDATE_CHECK = Get-Date
+
+function Invoke-UpdateCheck {
+    $baseUrl = $script:NOTIFICATION_URL -replace '/update$', ''
+    try {
+        $serverVersion = (Invoke-WebRequest -Uri "$baseUrl/version" -Headers $script:HEADERS `
+            -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop).Content.Trim()
+        if ($serverVersion -and $serverVersion -ne $VERSION) {
+            Write-Host "Update available: $VERSION -> $serverVersion"
+            $newScript = (Invoke-WebRequest -Uri "$baseUrl/install/minertimer.ps1" `
+                -Headers $script:HEADERS -TimeoutSec 30 -UseBasicParsing -ErrorAction Stop).Content
+            if ($newScript -and $newScript -match '^\s*#') {
+                $scriptPath = Join-Path $BASE_DIR "minertimer.ps1"
+                Set-Content -Path $scriptPath -Value $newScript -Encoding UTF8
+                Write-Host "Updated to version $serverVersion, restarting..."
+                # Exit non-zero on purpose. Under NSSM either code restarts the
+                # service (AppExit Default Restart), but the Scheduled Task
+                # variant only has an AtStartup trigger plus
+                # restart-on-failure: a clean exit 0 ends the task and
+                # monitoring stays dead until the next reboot. A failure exit
+                # is what makes Task Scheduler bring it back, within the
+                # configured minute.
+                exit 1
+            }
+        }
+    } catch {
+        # Update check failed, try again at the next interval
+    }
 }
 
 # ===== Main loop =====
 while ($true) {
+    $cycleStart = Get-Date
+
     # Debug toggle
     if (Test-Path $DEBUG_FILE) {
         $VerbosePreference = "Continue"
@@ -174,7 +224,7 @@ while ($true) {
         if ($script:NOTIFICATION_URL) {
             $url = "$($script:NOTIFICATION_URL)/$mcUser/$($script:CURRENT_DATE)/$($script:TOTAL_PLAYED_TIME)/$($script:TIME_LIMIT)"
             try {
-                $res = (Invoke-WebRequest -Uri $url -Headers $headers `
+                $res = (Invoke-WebRequest -Uri $url -Headers $script:HEADERS `
                     -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop).Content.Trim()
                 if ($res -match '^\d+$') {
                     $serverMax = [int]$res
@@ -217,8 +267,31 @@ while ($true) {
             $script:DISPLAY_1_MIN_WARNING = $false
         }
 
+        # Sleep, then add the time that actually passed. A flat $RECHECK_TIME
+        # undercounts: enumerating all processes through Win32_Process plus the
+        # HTTP round trip sits on top of the sleep, measured at 30.8s of real
+        # time per 30 counted — about 3%, or seven free minutes in a four-hour
+        # allowance.
+        #
+        # The upper bound is what makes this safe. A machine that sleeps
+        # mid-game wakes up with Minecraft still running and hours of
+        # wall-clock gone, and an unbounded delta would swallow the whole day's
+        # quota in one step; a clock correction in either direction falls back
+        # the same way.
         Start-Sleep -Seconds $RECHECK_TIME
-        $script:TOTAL_PLAYED_TIME += $RECHECK_TIME
+        $cycleSeconds = ((Get-Date) - $cycleStart).TotalSeconds
+        if ($cycleSeconds -lt 1 -or $cycleSeconds -gt (2 * $RECHECK_TIME)) {
+            $cycleSeconds = $RECHECK_TIME
+        }
+        # Carry the sub-second rest over instead of rounding it away. Rounding
+        # each cycle on its own is biased: a measured 30.6s counted as 31s
+        # inflates the playtime by 1.3%, which is the same size as the drift
+        # this is meant to fix, only in the child's disfavour. Whole seconds go
+        # to the counter, the remainder waits for the next cycle.
+        $cycleSeconds += $script:CYCLE_REMAINDER
+        $wholeSeconds = [int][math]::Floor($cycleSeconds)
+        $script:CYCLE_REMAINDER = $cycleSeconds - $wholeSeconds
+        $script:TOTAL_PLAYED_TIME += $wholeSeconds
         Write-StateLog
     } else {
         Start-Sleep -Seconds $RECHECK_TIME
@@ -238,33 +311,13 @@ while ($true) {
         $script:DISPLAY_5_MIN_WARNING = $true
         $script:DISPLAY_1_MIN_WARNING = $true
         Write-StateLog
+    }
 
-        # Auto-update check
-        $baseUrl = $script:NOTIFICATION_URL -replace '/update$', ''
-        try {
-            $serverVersion = (Invoke-WebRequest -Uri "$baseUrl/version" -Headers $headers `
-                -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop).Content.Trim()
-            if ($serverVersion -and $serverVersion -ne $VERSION) {
-                Write-Host "Update available: $VERSION -> $serverVersion"
-                $newScript = (Invoke-WebRequest -Uri "$baseUrl/install/minertimer.ps1" `
-                    -Headers $headers -TimeoutSec 30 -UseBasicParsing -ErrorAction Stop).Content
-                if ($newScript -and $newScript -match '^\s*#') {
-                    $scriptPath = Join-Path $BASE_DIR "minertimer.ps1"
-                    Set-Content -Path $scriptPath -Value $newScript -Encoding UTF8
-                    Write-Host "Updated to version $serverVersion, restarting..."
-                    # Exit non-zero on purpose. Under NSSM either code restarts
-                    # the service (AppExit Default Restart), but the Scheduled
-                    # Task variant only has an AtStartup trigger plus
-                    # restart-on-failure: a clean exit 0 ends the task and
-                    # monitoring stays dead until the next reboot. A failure
-                    # exit is what makes Task Scheduler bring it back, within
-                    # the configured minute.
-                    exit 1
-                }
-            }
-        } catch {
-            # Update check failed, continue
-        }
+    # Check for updates on our own schedule, independent of the rollover.
+    $sinceCheck = ((Get-Date) - $script:LAST_UPDATE_CHECK).TotalSeconds
+    if ($sinceCheck -ge [double]$script:UPDATE_CHECK_INTERVAL -or $sinceCheck -lt 0) {
+        $script:LAST_UPDATE_CHECK = Get-Date
+        Invoke-UpdateCheck
     }
 }
 

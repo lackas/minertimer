@@ -9,13 +9,13 @@ MinerTimer runs a lightweight background daemon that monitors Minecraft processe
 ### Features
 
 - Automatic detection of Minecraft Java Edition, Bedrock Edition, NoRiskClient, Modrinth, and Dawn (Feather) — the game itself, not the launcher window
-- Dashboard shows the client version each machine reports, and marks it when an auto-update is still pending
+- Dashboard shows the client version per machine — a child's gaming PC and Mac are listed separately — and marks a machine when an auto-update is still pending
 - Configurable daily time limits (default: 30 minutes)
 - Web dashboard for real-time monitoring and time management
 - Voice and notification warnings before time expires (5 min, 1 min)
 - Admin can extend or revoke time remotely via the web UI
 - Per-user playtime tracking with 30-day statistics
-- Auto-update: clients update themselves from the server daily
+- Auto-update: clients check hourly and update themselves from the server, whether or not anyone is playing
 - Multi-platform: macOS (LaunchDaemon) and Windows (NSSM service or Scheduled Task)
 
 ### Architecture
@@ -25,7 +25,7 @@ MinerTimer runs a lightweight background daemon that monitors Minecraft processe
 [Windows Client] ──>     (Docker)
 ```
 
-- **Clients** check for Minecraft every 30 seconds, report playtime to the server, and kill the game when time runs out
+- **Clients** check for Minecraft every 30 seconds, count the time that actually elapsed, report playtime to the server, and kill the game when time runs out
 - **Server** stores playtime state, serves the admin dashboard, and distributes client installers
 - **Dashboard** shows live player status, lets admins adjust time limits, and provides setup instructions
 

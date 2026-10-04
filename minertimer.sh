@@ -5,7 +5,7 @@
 # Developed and owned by Soferio Pty Limited.
 ###
 
-VERSION="4"
+VERSION="5"
 DEBUG_FILE="/Users/Shared/minertimer/debug"
 
 # Processes that count as "Minecraft is running". Each alternative is matched
@@ -91,13 +91,51 @@ fi
 
 # Build curl args so the token stays out of process args. The version header
 # lets the dashboard show which client version each machine actually runs —
-# without it there is no way to tell whether an auto-update has landed.
+# without it there is no way to tell whether an auto-update has landed. The
+# host header separates the machines of one child: the dashboard keeps one
+# record per machine, so a rarely used Mac stays visible next to the PC that
+# reported last.
+CLIENT_HOST=$(hostname -s 2>/dev/null)
 CURL_BASE_ARGS=(-s -H "X-Client-Version: $VERSION" -H "X-Client-Platform: macos")
+if [ -n "$CLIENT_HOST" ]; then
+    CURL_BASE_ARGS+=(-H "X-Client-Host: $CLIENT_HOST")
+fi
 if [ -s "$CURL_HEADER_FILE" ]; then
     CURL_BASE_ARGS+=(-H "@${CURL_HEADER_FILE}")
 fi
 
+# The update check used to hang off the daily rollover, which only fires if the
+# machine is awake when the date changes. A MacBook that spends the night
+# closed never got there and stayed on an old version for days, so the check
+# now runs on its own clock — no date change and nobody playing required.
+UPDATE_CHECK_INTERVAL=${UPDATE_CHECK_INTERVAL:-3600}
+# Seeded with "now" rather than 0 so the first check happens one interval after
+# a start. A self-update that kept installing a version the server disagrees
+# with would otherwise restart in a tight loop; this bounds it to once an hour.
+LAST_UPDATE_CHECK=$(date +%s)
+
+check_for_update() {
+    local base_url server_version
+    base_url="${NOTIFICATION_URL%/update}"
+    server_version=$(curl "${CURL_BASE_ARGS[@]}" "$base_url/version" 2>/dev/null)
+    if [ -z "$server_version" ] || [ "$server_version" = "$VERSION" ]; then
+        return
+    fi
+    echo "Update available: $VERSION -> $server_version"
+    curl "${CURL_BASE_ARGS[@]}" "$base_url/install/minertimer.sh" -o /tmp/minertimer_new.sh 2>/dev/null
+    if [ -s /tmp/minertimer_new.sh ] && head -1 /tmp/minertimer_new.sh | grep -q '^#!/bin/zsh'; then
+        cp /tmp/minertimer_new.sh /Users/Shared/minertimer/minertimer.sh
+        chmod +x /Users/Shared/minertimer/minertimer.sh
+        rm -f /tmp/minertimer_new.sh
+        echo "Updated to version $server_version, restarting..."
+        # The LaunchDaemon's KeepAlive starts the new script immediately.
+        exit 0
+    fi
+}
+
 while true; do
+    CYCLE_START=$(date +%s)
+
     # Toggle debug tracing based on debug file
     if [ -f "$DEBUG_FILE" ]; then
         [[ ! -o xtrace ]] && echo "Debug enabled"
@@ -157,9 +195,23 @@ while true; do
             DISPLAY_1_MIN_WARNING=false
         fi
         
-        # Sleep, then increment the playtime
+        # Sleep, then add the time that actually passed. Adding a flat
+        # $RECHECK_TIME undercounts, because the ps scan and the curl round
+        # trip sit on top of the sleep: on Windows that measured 30.8s of real
+        # time per 30 counted, about 3% — seven free minutes in a four-hour
+        # allowance.
+        #
+        # The upper bound is what makes this safe. A laptop suspended mid-game
+        # wakes up with Minecraft still in ps and hours of wall-clock gone, and
+        # an unbounded delta would swallow the whole day's quota in one step;
+        # the same goes for an NTP correction jumping the clock forward. A
+        # backwards jump lands below 1 and falls back as well.
         sleep $RECHECK_TIME
-        TOTAL_PLAYED_TIME=$((TOTAL_PLAYED_TIME + $RECHECK_TIME))
+        CYCLE_SECONDS=$(( $(date +%s) - CYCLE_START ))
+        if (( CYCLE_SECONDS < 1 || CYCLE_SECONDS > 2 * RECHECK_TIME )); then
+            CYCLE_SECONDS=$RECHECK_TIME
+        fi
+        TOTAL_PLAYED_TIME=$((TOTAL_PLAYED_TIME + CYCLE_SECONDS))
 
         write_log
 
@@ -188,21 +240,13 @@ while true; do
         DISPLAY_5_MIN_WARNING=true
         DISPLAY_1_MIN_WARNING=true
         write_log
+    fi
 
-        # Check for updates
-        BASE_URL="${NOTIFICATION_URL%/update}"
-        server_version=$(curl "${CURL_BASE_ARGS[@]}" "$BASE_URL/version" 2>/dev/null)
-        if [ -n "$server_version" ] && [ "$server_version" != "$VERSION" ]; then
-            echo "Update available: $VERSION -> $server_version"
-            curl "${CURL_BASE_ARGS[@]}" "$BASE_URL/install/minertimer.sh" -o /tmp/minertimer_new.sh 2>/dev/null
-            if [ -s /tmp/minertimer_new.sh ] && head -1 /tmp/minertimer_new.sh | grep -q '^#!/bin/zsh'; then
-                cp /tmp/minertimer_new.sh /Users/Shared/minertimer/minertimer.sh
-                chmod +x /Users/Shared/minertimer/minertimer.sh
-                rm /tmp/minertimer_new.sh
-                echo "Updated to version $server_version, restarting..."
-                exit 0
-            fi
-        fi
+    # Check for updates on our own schedule, independent of the rollover.
+    NOW_SECONDS=$(date +%s)
+    if (( NOW_SECONDS - LAST_UPDATE_CHECK >= UPDATE_CHECK_INTERVAL || NOW_SECONDS < LAST_UPDATE_CHECK )); then
+        LAST_UPDATE_CHECK=$NOW_SECONDS
+        check_for_update
     fi
 done
 

@@ -41,7 +41,11 @@ CLIENT_INFO_DIR.mkdir(exist_ok=True)
 PASSWORD_FILE = DB_DIR / "password"
 DEFAULT_LIMIT_SECONDS = 30 * 60
 INCREMENTS = [5, 15, 30, 60]
-CLIENT_VERSION = "4"
+CLIENT_VERSION = "5"
+# A machine that has not reported for this long is shown with its date instead
+# of an "update pending" flag: it is idle, not broken.
+CLIENT_RECENT_HOURS = 48
+CLIENT_FORGET_DAYS = 30
 API_TOKEN = os.environ.get("API_TOKEN", "")
 NOTIFICATION_URL = os.environ.get("NOTIFICATION_URL", "https://minertimer.lackas.net/update")
 ASSETS_DIR = Path("/app/assets")
@@ -67,14 +71,16 @@ PLAYERS_TEMPLATE = """
             {% if over %}<span class="over-limit">Time used up</span>{% endif %}
         </h4>
     </div>
-    {% if info.client %}
+    {% for machine in info.clients %}
     <div class="client-info">
-        Client {{ info.client.version }}{% if info.client.platform %} ({{ info.client.platform }}){% endif %}
-        {%- if client_version and info.client.version != client_version %}
+        Client {{ machine.version }}{% if machine.platform %} ({{ machine.platform }}{% if machine.host %} &middot; {{ machine.host }}{% endif %}){% endif %}
+        {%- if not machine.recent %}
+        <span class="client-old">last seen {{ machine.last_seen_label }}</span>
+        {%- elif client_version and machine.version != client_version %}
         <span class="client-stale">&ne; {{ client_version }} on server, update pending</span>
         {%- endif %}
     </div>
-    {% endif %}
+    {% endfor %}
     {% if increments %}
     {% set offset = info.max_time %}
     <div class="buttons">
@@ -116,36 +122,113 @@ def _read_state(path: Path) -> tuple[int, int] | None:
         return None
 
 
-def _record_client_info(user: str, version: str | None, platform: str | None) -> None:
-    """Remember which client version a machine reported.
+def _safe_header(value: str | None, pattern: str = r"^[\w.:+-]{1,40}$") -> str | None:
+    """Whitelist a client-supplied header value, or drop it."""
+    if value and re.match(pattern, value):
+        return value
+    return None
 
-    /update has no authentication (the token check is commented out), so the
-    headers are attacker-controlled: both values are whitelisted to a short,
-    harmless character set before they are stored or ever rendered.
+
+def _client_machine_key(platform: str | None, host: str | None) -> str:
+    base = platform or "unknown"
+    return f"{base}:{host}" if host else base
+
+
+def _parse_last_seen(machine: dict) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(machine.get("last_seen", "")))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=TZ)
+
+
+def _load_machines(path: Path) -> dict[str, dict]:
+    """Read the stored machines, accepting the single-slot format of client 4."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError, OSError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    machines = data.get("machines")
+    if isinstance(machines, dict):
+        return {k: v for k, v in machines.items() if isinstance(v, dict)}
+    if data.get("version"):
+        return {_client_machine_key(data.get("platform"), None): data}
+    return {}
+
+
+def _record_client_info(
+    user: str, version: str | None, platform: str | None, host: str | None = None
+) -> None:
+    """Remember which client version each of a user's machines reported.
+
+    /update has no authentication (the token check is commented out), so every
+    header here is attacker-controlled: each value is whitelisted to a short,
+    harmless character set before it is stored or ever rendered.
+
+    One record per machine, not one per user: David plays mostly on the gaming
+    PC and now and then on the Mac, and a single slot would simply show
+    whichever machine reported last. The other machine's version would be
+    invisible — including a Mac that quietly stopped updating itself.
     """
+    version = _safe_header(version, r"^[\w.+-]{1,20}$")
     if not version:
         return
-    if not re.match(r"^[\w.+-]{1,20}$", version):
-        return
-    if platform and not re.match(r"^[a-z]{1,16}$", platform):
-        platform = None
-    payload = {
+    platform = _safe_header(platform, r"^[a-z]{1,16}$")
+    host = _safe_header(host, r"^[\w.-]{1,32}$")
+    now = _now_local()
+    path = CLIENT_INFO_DIR / f"{user}.json"
+    machines = _load_machines(path)
+    if host:
+        # Client 4 and older sent no host, so their record is keyed by platform
+        # alone. The first report from the same platform *with* a host is that
+        # very machine after its update — drop the hostless record instead of
+        # listing the Mac twice, once as a phantom still "update pending".
+        machines.pop(_client_machine_key(platform, None), None)
+    machines[_client_machine_key(platform, host)] = {
         "version": version,
         "platform": platform or "",
-        "last_seen": _now_local().isoformat(timespec="seconds"),
+        "host": host or "",
+        "last_seen": now.isoformat(timespec="seconds"),
+    }
+    # Forget a machine nobody has played on for a month, so a reinstalled or
+    # retired box does not sit in the dashboard forever.
+    cutoff = now - timedelta(days=CLIENT_FORGET_DAYS)
+    machines = {
+        key: entry
+        for key, entry in machines.items()
+        if (_parse_last_seen(entry) or now) >= cutoff
     }
     try:
-        (CLIENT_INFO_DIR / f"{user}.json").write_text(json.dumps(payload), encoding="utf-8")
+        path.write_text(json.dumps({"machines": machines}), encoding="utf-8")
     except OSError as exc:
         log.warning("could not store client info for %s: %s", user, exc)
 
 
-def _read_client_info(user: str) -> dict | None:
-    try:
-        data = json.loads((CLIENT_INFO_DIR / f"{user}.json").read_text(encoding="utf-8"))
-    except (FileNotFoundError, ValueError, OSError):
-        return None
-    return data if isinstance(data, dict) else None
+def _read_client_info(user: str) -> list[dict]:
+    """All machines known for a user, most recently seen first."""
+    now = _now_local()
+    machines = []
+    for entry in _load_machines(CLIENT_INFO_DIR / f"{user}.json").values():
+        last_seen = _parse_last_seen(entry)
+        machines.append(
+            {
+                "version": str(entry.get("version", "")),
+                "platform": str(entry.get("platform", "")),
+                "host": str(entry.get("host", "")),
+                "last_seen": last_seen,
+                "last_seen_label": last_seen.strftime("%d.%m. %H:%M") if last_seen else "?",
+                "recent": bool(
+                    last_seen and now - last_seen <= timedelta(hours=CLIENT_RECENT_HOURS)
+                ),
+            }
+        )
+    machines.sort(
+        key=lambda machine: machine["last_seen"] or datetime.min.replace(tzinfo=TZ),
+        reverse=True,
+    )
+    return machines
 
 
 def _load_users() -> dict[str, dict]:
@@ -356,7 +439,7 @@ def _players_for_today(user_meta: dict, viewer_user: str | None, admin: bool) ->
             "max_time": default_limit,
             "path": DB_DIR / f"{name}-{today}",
             "last_minutes": None,
-            "client": _read_client_info(name),
+            "clients": _read_client_info(name),
         }
 
     for entry in DB_DIR.glob(f"*-{today}"):
@@ -377,7 +460,7 @@ def _players_for_today(user_meta: dict, viewer_user: str | None, admin: bool) ->
             "max_time": max_time,
             "path": entry,
             "last_minutes": last_minutes,
-            "client": _read_client_info(user),
+            "clients": _read_client_info(user),
         }
 
     return today, players, list(user_meta.keys())
@@ -438,6 +521,7 @@ def update(user: str, date: str, played: int, client_max: int):
         user,
         request.headers.get("X-Client-Version"),
         request.headers.get("X-Client-Platform"),
+        request.headers.get("X-Client-Host"),
     )
     log.info("update: %s played=%dm/%dm", user, played // 60, current_max // 60)
 
@@ -446,6 +530,16 @@ def update(user: str, date: str, played: int, client_max: int):
 
 @app.get("/version")
 def version():
+    # Logged because this is the only sign of life from a machine nobody is
+    # playing on: the dashboard can only show what /update reports, and since
+    # client 5 the update check runs hourly on every awake machine. Grep the
+    # log to see who checked in and with which version.
+    log.info(
+        "version check: client=%s platform=%s host=%s",
+        _safe_header(request.headers.get("X-Client-Version"), r"^[\w.+-]{1,20}$"),
+        _safe_header(request.headers.get("X-Client-Platform"), r"^[a-z]{1,16}$"),
+        _safe_header(request.headers.get("X-Client-Host"), r"^[\w.-]{1,32}$"),
+    )
     return CLIENT_VERSION, 200, {"Content-Type": "text/plain"}
 
 
@@ -510,6 +604,7 @@ def _render_dashboard(message: str | None = None):
         .over-limit { color: #c0392b; }
         .client-info { font-size: 13px; color: #7f8c8d; margin: -8px 0 6px; }
         .client-stale { color: #c0392b; }
+        .client-old { color: #95a5a6; }
         .container {
             width: 90%;
             max-width: 600px;
