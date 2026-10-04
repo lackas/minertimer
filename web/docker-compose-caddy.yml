@@ -1,3 +1,9 @@
+# UNUSED — kept only for reference. The deployment runs docker-compose.yml.
+#
+# This variant attaches `caddy_default`, while Caddy reaches the service by
+# container name on the shared `wtb-shared` network. Starting this file instead
+# recreates the container off that network, and the site answers 502 behind a
+# container that looks healthy. See restart.sh.
 services:
   minertimer:
     build:
