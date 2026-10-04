@@ -10,7 +10,8 @@ MinerTimer runs a lightweight background daemon that monitors Minecraft processe
 
 - Automatic detection of Minecraft Java Edition, Bedrock Edition, NoRiskClient, Modrinth, and Dawn (Feather) — the game itself, not the launcher window
 - Dashboard shows the client version per machine — a child's gaming PC and Mac are listed separately — and marks a machine when an auto-update is still pending
-- Configurable daily time limits (default: 30 minutes)
+- Configurable daily time limits (default: 30 minutes), counted over a play day that runs 06:00 to 06:00 — no fresh quota at midnight, and the evening's curfew keeps applying past it
+- Night block: a hard stop between 01:00 and the start of the play day, liftable per date for sleepovers
 - Web dashboard for real-time monitoring and time management
 - Voice and notification warnings before time expires (5 min, 1 min)
 - Admin can extend or revoke time remotely via the web UI
@@ -53,9 +54,13 @@ Optional per-child rules can be stored in `web/db/users/<name>.json`. Example fi
 - `rules.curfew.fri_sat`
 - `rules.curfew.weekdays`
 - `rules.curfew.weekend`
+- `rules.curfew.night_block_start` (default `01:00`, must be before 06:00)
 - `overrides.dates.<YYYY-MM-DD>.limit_minutes`
 - `overrides.dates.<YYYY-MM-DD>.curfew`
-- `overrides.dates.<YYYY-MM-DD>.disable_curfew`
+- `overrides.dates.<YYYY-MM-DD>.disable_curfew` (late evening, night block still applies)
+- `overrides.dates.<YYYY-MM-DD>.open_end` (lifts curfew and night block, e.g. sleepover)
+
+Dates in the override map and in the curfew rules refer to the **evening**: the night from Saturday to Sunday belongs to Saturday.
 
 The server currently applies the schedule, learning-time/exam reduction, and curfew rules to the daily limit. Date overrides can be used for holidays or one-off exceptions. Informational rules such as homework prerequisites or non-transferability can also be documented there for reference.
 

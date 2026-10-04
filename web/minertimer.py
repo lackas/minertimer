@@ -46,6 +46,19 @@ CLIENT_VERSION = "5"
 # of an "update pending" flag: it is idle, not broken.
 CLIENT_RECENT_HOURS = 48
 CLIENT_FORGET_DAYS = 30
+# The play day runs 06:00 -> 06:00, not midnight to midnight. A day that flips
+# at 00:00 hands out a fresh quota in the middle of the night and retires the
+# curfew that was supposed to end the evening: a Saturday "24:00" expired on a
+# day the client had already left behind, so playing on past midnight came with
+# 240 new minutes — an incentive to stay awake. The clients compute the same
+# shift, so this hour has to stay in sync with DAY_START_HOUR in
+# minertimer.sh / minertimer.ps1.
+DAY_START_HOUR = 6
+# Hard floor for the night, independent of quota and curfew: nothing runs
+# between this time and the start of the play day. Overridable per child via
+# rules.curfew.night_block_start, and liftable for a single night with an
+# open_end date override.
+NIGHT_BLOCK_START_DEFAULT = "01:00"
 API_TOKEN = os.environ.get("API_TOKEN", "")
 NOTIFICATION_URL = os.environ.get("NOTIFICATION_URL", "https://minertimer.lackas.net/update")
 ASSETS_DIR = Path("/app/assets")
@@ -330,7 +343,7 @@ def _curfew_deadline_for_day(meta: dict, day: date) -> datetime | None:
     rules = meta.get("config", {}).get("rules", {})
     curfew = rules.get("curfew", {})
     override = _date_override(meta, day)
-    if override.get("disable_curfew"):
+    if override.get("disable_curfew") or override.get("open_end"):
         return None
     if "curfew" in override:
         curfew_value = override.get("curfew")
@@ -361,14 +374,48 @@ def _curfew_deadline_for_day(meta: dict, day: date) -> datetime | None:
     )
 
 
-def _apply_curfew(meta: dict, day: date, played: int, max_time: int, now: datetime | None = None) -> int:
-    deadline = _curfew_deadline_for_day(meta, day)
-    if not deadline:
-        return max_time
+def _night_block_window(meta: dict, now: datetime) -> tuple[datetime, datetime] | None:
+    """The night that is currently running, or None if it is lifted.
+
+    Keyed on wall-clock time, not on the day the client reports: a client older
+    than 5 still flips to the next date at midnight, and a window hanging off
+    *its* date would only start the night after. Deriving the day from `now`
+    blocks every client at 01:00, updated or not.
+    """
+    day = _effective_day(now)
+    if _date_override(meta, day).get("open_end"):
+        return None
+    curfew = meta.get("config", {}).get("rules", {}).get("curfew", {})
+    value = curfew.get("night_block_start", NIGHT_BLOCK_START_DEFAULT)
+    match = re.match(r"^(\d{1,2}):(\d{2})$", str(value))
+    if not match:
+        return None
+    hour, minute = int(match.group(1)), int(match.group(2))
+    # The block has to sit inside the night the play day already owns, so it
+    # ends where the next day begins and cannot start after that.
+    if hour >= DAY_START_HOUR or minute > 59:
+        return None
+    night = day + timedelta(days=1)
+    start = datetime(night.year, night.month, night.day, hour, minute, tzinfo=TZ)
+    end = datetime(night.year, night.month, night.day, DAY_START_HOUR, 0, tzinfo=TZ)
+    return start, end
+
+
+def _apply_night_limits(meta: dict, day: date, played: int, max_time: int, now: datetime | None = None) -> int:
+    """Cap the day's allowance to what is already played once the night closes.
+
+    Handing back `played` is what ends the session: the client compares its own
+    counter against the limit we return, so an equal value kills the game on the
+    next cycle.
+    """
     current_time = now or _now_local()
-    if current_time < deadline:
-        return max_time
-    return min(max_time, played)
+    deadline = _curfew_deadline_for_day(meta, day)
+    if deadline and current_time >= deadline:
+        max_time = min(max_time, played)
+    window = _night_block_window(meta, current_time)
+    if window and window[0] <= current_time < window[1]:
+        max_time = min(max_time, played)
+    return max_time
 
 
 def _valid_curfew_value(value: str) -> bool:
@@ -422,10 +469,20 @@ def _now_local() -> datetime:
     return datetime.now(tz=TZ)
 
 
+def _effective_day(now: datetime | None = None) -> date:
+    """The play day that is currently open — see DAY_START_HOUR.
+
+    Between midnight and 06:00 that is still yesterday, which keeps the evening
+    quota, the evening curfew and the stored playtime file in one piece across
+    midnight.
+    """
+    return ((now or _now_local()) - timedelta(hours=DAY_START_HOUR)).date()
+
+
 def _players_for_today(user_meta: dict, viewer_user: str | None, admin: bool) -> tuple[str, dict]:
     now = _now_local()
-    today_date = now.date()
-    today = now.strftime("%Y-%m-%d")
+    today_date = _effective_day(now)
+    today = today_date.strftime("%Y-%m-%d")
     players: dict[str, dict] = {}
     for name, meta in user_meta.items():
         if meta.get("role") == "admin":
@@ -433,7 +490,7 @@ def _players_for_today(user_meta: dict, viewer_user: str | None, admin: bool) ->
         if not admin and viewer_user and name != viewer_user:
             continue
         default_limit = _default_limit_for_day(meta, today_date)
-        default_limit = _apply_curfew(meta, today_date, 0, default_limit, now)
+        default_limit = _apply_night_limits(meta, today_date, 0, default_limit, now)
         players[name] = {
             "played": 0,
             "max_time": default_limit,
@@ -453,7 +510,7 @@ def _players_for_today(user_meta: dict, viewer_user: str | None, admin: bool) ->
         if not admin and viewer_user and user != viewer_user:
             continue
         played, max_time = state
-        max_time = _apply_curfew(meta, today_date, played, max_time, now)
+        max_time = _apply_night_limits(meta, today_date, played, max_time, now)
         last_minutes = int((now.timestamp() - entry.stat().st_mtime) / 60)
         players[user] = {
             "played": played,
@@ -467,7 +524,7 @@ def _players_for_today(user_meta: dict, viewer_user: str | None, admin: bool) ->
 
 
 def _daily_stats(user: str, days: int = 30) -> list[dict]:
-    end_date = _now_local().date()
+    end_date = _effective_day()
     start_date = end_date - timedelta(days=days - 1)
     results: list[dict] = []
     for i in range(days):
@@ -507,9 +564,9 @@ def update(user: str, date: str, played: int, client_max: int):
     current_state = _read_state(path)
     current_played = current_state[0] if current_state else 0
     current_max = current_state[1] if current_state else default_limit
-    effective_max = _apply_curfew(user_meta.get(user, {}), day, current_played, current_max)
+    effective_max = _apply_night_limits(user_meta.get(user, {}), day, current_played, current_max)
     if effective_max != current_max:
-        log.info("curfew applied: %s date=%s played=%dm max=%dm -> %dm", user, date, current_played // 60, current_max // 60, effective_max // 60)
+        log.info("night limit applied: %s date=%s played=%dm max=%dm -> %dm", user, date, current_played // 60, current_max // 60, effective_max // 60)
     current_max = effective_max
 
     # don't allow decrease of played time
@@ -1145,6 +1202,7 @@ def update_user_config(user: str):
         limit_minutes_raw = request.form.get("limit_minutes", "").strip()
         curfew_raw = request.form.get("curfew", "").strip()
         disable_curfew = request.form.get("disable_curfew") == "on"
+        open_end = request.form.get("open_end") == "on"
         notes_raw = request.form.get("notes", "").strip()
 
         override: dict[str, object] = {}
@@ -1162,6 +1220,11 @@ def update_user_config(user: str):
             override["curfew"] = curfew_raw
         if disable_curfew:
             override["disable_curfew"] = True
+        if open_end:
+            # Lifts the night block as well — that is the point of the flag, and
+            # the reason it is separate from disable_curfew, which several past
+            # holidays carry and which must keep meaning "late, but not all night".
+            override["open_end"] = True
         if notes_raw:
             override["notes"] = notes_raw
 
@@ -1213,7 +1276,7 @@ def user_stats(user: str):
     config = meta.get("config", {})
     flags = config.get("flags", {})
     overrides = config.get("overrides", {}).get("dates", {})
-    today = _now_local().date()
+    today = _effective_day()
     override_items = []
     for date_str in sorted(overrides):
         override = overrides.get(date_str, {})
@@ -1230,12 +1293,15 @@ def user_stats(user: str):
                 "limit_minutes": override.get("limit_minutes", ""),
                 "curfew": override.get("curfew", ""),
                 "disable_curfew": bool(override.get("disable_curfew")),
+                "open_end": bool(override.get("open_end")),
                 "notes": override.get("notes", ""),
             }
         )
     today_limit_minutes = _default_limit_for_day(meta, today) // 60
     today_override = _date_override(meta, today)
-    if today_override.get("disable_curfew"):
+    if today_override.get("open_end"):
+        today_curfew_label = "open end"
+    elif today_override.get("disable_curfew"):
         today_curfew_label = "aus"
     elif today_override.get("curfew"):
         today_curfew_label = str(today_override.get("curfew"))
@@ -1246,6 +1312,12 @@ def user_stats(user: str):
             today_curfew_label = str(curfew_rules.get("fri_sat", curfew_rules.get("weekend", "-")))
         else:
             today_curfew_label = str(curfew_rules.get("school_nights", curfew_rules.get("weekdays", "-")))
+    # Without a curfew the quota alone ends the evening, and the night block is
+    # the only hard stop there is — so it belongs next to it in the status line.
+    night_window = _night_block_window(meta, _now_local())
+    today_night_label = (
+        f"{night_window[0].strftime('%H:%M')}-{night_window[1].strftime('%H:%M')}" if night_window else "aus"
+    )
     message = request.args.get("message", "")
     html = """
 <!DOCTYPE html>
@@ -1435,7 +1507,7 @@ def user_stats(user: str):
             </label>
             <button class="button-primary" type="submit">Speichern</button>
         </form>
-        <div class="status">Heute: {{ today_limit_minutes }} Minuten, Sperrzeit {{ today_curfew_label }}</div>
+        <div class="status">Heute: {{ today_limit_minutes }} Minuten, Sperrzeit {{ today_curfew_label }}, Nachtruhe {{ today_night_label }}</div>
     </div>
 
     <div class="panel">
@@ -1459,6 +1531,10 @@ def user_stats(user: str):
                     <input type="checkbox" name="disable_curfew">
                     Sperrzeit aus
                 </label>
+                <label class="checkbox-label" style="margin: 0;">
+                    <input type="checkbox" name="open_end">
+                    Open End (auch Nachtruhe aus)
+                </label>
             </div>
             <label>
                 Notiz
@@ -1474,7 +1550,8 @@ def user_stats(user: str):
                     <strong class="override-date">{{ item.date }}</strong>
                     <div class="override-meta">
                         Limit: {{ item.limit_minutes if item.limit_minutes != "" else "-" }},
-                        Sperrzeit: {% if item.disable_curfew %}aus{% else %}{{ item.curfew if item.curfew else "-" }}{% endif %}
+                        Sperrzeit: {% if item.open_end or item.disable_curfew %}aus{% else %}{{ item.curfew if item.curfew else "-" }}{% endif %}
+                        {% if item.open_end %}, Open End{% endif %}
                         {% if item.notes %}, {{ item.notes }}{% endif %}
                     </div>
                 </div>
@@ -1504,6 +1581,7 @@ def user_stats(user: str):
         learning_time=bool(flags.get("learning_time")),
         today_limit_minutes=today_limit_minutes,
         today_curfew_label=today_curfew_label,
+        today_night_label=today_night_label,
         override_items=override_items,
         message=message,
     )

@@ -50,8 +50,23 @@ LOG_FILE="${LOG_DIRECTORY}/minertimer_playtime.log"
 # Create the directory (don't throw error if already exists)
 mkdir -p $LOG_DIRECTORY
 
-# Get the current date
-CURRENT_DATE=$(date +%Y-%m-%d)
+# The play day starts at 06:00, not at midnight, and has to match
+# DAY_START_HOUR in web/minertimer.py — the server resolves the curfew and the
+# quota for exactly the date we report here. Rolling over at 00:00 handed out a
+# fresh allowance in the middle of the night and retired the evening's curfew
+# along with the date it belonged to.
+DAY_START_HOUR=6
+
+# BSD date on macOS, GNU date in the Linux test container. The last resort is
+# the plain calendar day: a wrong day still enforces a limit, an empty one
+# would build a URL the server rejects.
+play_day() {
+    date -v-${DAY_START_HOUR}H +%Y-%m-%d 2>/dev/null \
+        || date -d "-${DAY_START_HOUR} hours" +%Y-%m-%d 2>/dev/null \
+        || date +%Y-%m-%d
+}
+
+CURRENT_DATE=$(play_day)
 
 TIME_LIMIT="$TIME_LIMIT_DEFAULT"
 TOTAL_PLAYED_TIME="0"
@@ -222,8 +237,8 @@ while true; do
         sleep $RECHECK_TIME
     fi
 
-    # Get the current date
-    CURRENT_DATE=$(date +%Y-%m-%d)
+    # Get the current play day
+    CURRENT_DATE=$(play_day)
 
     # Read the last play date from the log file
     if [ -f "$LOG_FILE" ]; then

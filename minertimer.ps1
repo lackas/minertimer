@@ -44,8 +44,19 @@ if (Test-Path $ENV_FILE) {
 
 $RECHECK_TIME = 30
 
+# The play day starts at 06:00, not at midnight, and has to match
+# DAY_START_HOUR in web/minertimer.py — the server resolves the curfew and the
+# quota for exactly the date we report here. Rolling over at 00:00 handed out a
+# fresh allowance in the middle of the night and retired the evening's curfew
+# along with the date it belonged to.
+$DAY_START_HOUR = 6
+
+function Get-PlayDay {
+    (Get-Date).AddHours(-$DAY_START_HOUR).ToString("yyyy-MM-dd")
+}
+
 # State
-$script:CURRENT_DATE = Get-Date -Format "yyyy-MM-dd"
+$script:CURRENT_DATE = Get-PlayDay
 $script:TIME_LIMIT = [int]$script:TIME_LIMIT_DEFAULT
 $script:TOTAL_PLAYED_TIME = 0
 $script:DISPLAY_5_MIN_WARNING = $true
@@ -297,8 +308,8 @@ while ($true) {
         Start-Sleep -Seconds $RECHECK_TIME
     }
 
-    # Update date
-    $script:CURRENT_DATE = Get-Date -Format "yyyy-MM-dd"
+    # Update play day
+    $script:CURRENT_DATE = Get-PlayDay
 
     # Check for day change
     if (Test-Path $LOG_FILE) {
