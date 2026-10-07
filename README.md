@@ -16,7 +16,7 @@ MinerTimer runs a lightweight background daemon that monitors Minecraft processe
 - Voice and notification warnings before time expires (5 min, 1 min)
 - Admin can extend or revoke time remotely via the web UI
 - Per-user playtime tracking with 30-day statistics
-- Auto-update: clients check hourly and update themselves from the server, whether or not anyone is playing
+- Auto-update: clients check hourly and update themselves from the server, whether or not anyone is playing — the dashboard picks up the new version from that check, so it stays accurate for machines nobody plays on
 - Multi-platform: macOS (LaunchDaemon) and Windows (NSSM service or Scheduled Task)
 
 ### Architecture

@@ -219,6 +219,30 @@ def _record_client_info(
         log.warning("could not store client info for %s: %s", user, exc)
 
 
+def _user_for_machine(platform: str | None, host: str | None) -> str | None:
+    """Which child's machine is this, judging by platform and hostname.
+
+    A version check carries no username — the clients only learn one from the
+    owner of the running game process — so a check can only be attributed to a
+    machine the dashboard already knows from an earlier /update. An unknown
+    machine is left alone rather than guessed at, and an ambiguous match (two
+    children with a hostless record of the same platform, written by a client
+    older than 5) is treated as unknown for the same reason.
+    """
+    if not platform:
+        return None
+    key = _client_machine_key(platform, host)
+    legacy_key = _client_machine_key(platform, None)
+    legacy_matches = []
+    for path in sorted(CLIENT_INFO_DIR.glob("*.json")):
+        machines = _load_machines(path)
+        if key in machines:
+            return path.stem
+        if host and legacy_key in machines:
+            legacy_matches.append(path.stem)
+    return legacy_matches[0] if len(legacy_matches) == 1 else None
+
+
 def _read_client_info(user: str) -> list[dict]:
     """All machines known for a user, most recently seen first."""
     now = _now_local()
@@ -596,15 +620,20 @@ def update(user: str, date: str, played: int, client_max: int):
 
 @app.get("/version")
 def version():
-    # Logged because this is the only sign of life from a machine nobody is
-    # playing on: the dashboard can only show what /update reports, and since
-    # client 5 the update check runs hourly on every awake machine. Grep the
-    # log to see who checked in and with which version.
+    # This is the only sign of life from a machine nobody is playing on, and
+    # since client 5 it arrives hourly from every awake one. Recording it keeps
+    # the dashboard honest: a Mac that updated itself in the night used to go on
+    # showing "update pending" until the child next played — two days later, in
+    # the case that prompted this.
+    client_version = _safe_header(request.headers.get("X-Client-Version"), r"^[\w.+-]{1,20}$")
+    platform = _safe_header(request.headers.get("X-Client-Platform"), r"^[a-z]{1,16}$")
+    host = _safe_header(request.headers.get("X-Client-Host"), r"^[\w.-]{1,32}$")
+    user = _user_for_machine(platform, host)
+    if user and client_version:
+        _record_client_info(user, client_version, platform, host)
     log.info(
-        "version check: client=%s platform=%s host=%s",
-        _safe_header(request.headers.get("X-Client-Version"), r"^[\w.+-]{1,20}$"),
-        _safe_header(request.headers.get("X-Client-Platform"), r"^[a-z]{1,16}$"),
-        _safe_header(request.headers.get("X-Client-Host"), r"^[\w.-]{1,32}$"),
+        "version check: client=%s platform=%s host=%s user=%s",
+        client_version, platform, host, user or "-",
     )
     return CLIENT_VERSION, 200, {"Content-Type": "text/plain"}
 
